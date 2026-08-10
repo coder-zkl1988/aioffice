@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { extname, join, normalize, resolve } from 'node:path'
@@ -12,6 +13,8 @@ import {
   type AiStreamChunk,
   type AiStreamRequest,
 } from '@genoffice/ai-provider'
+import { imageSearch, webSearch } from '@genoffice/ai-search'
+import { docxToText, pdfToText, pptxToText, xlsxToText } from '@genoffice/file-parse'
 import {
   applyImageEdits,
   listPageImages,
@@ -20,8 +23,9 @@ import {
 } from '../../pdf/src/main/image-edit'
 import { applyTextEdits, listEditFonts, validateTextEdits } from '../../pdf/src/main/text-edit'
 import type { ImageEditInput, PagePreviewRequest, TextEditInput } from '../../pdf/src/shared/ipc'
-import { validateProviderBaseUrl } from './security'
+import { validateProviderBaseUrl, validatePublicResourceUrl } from './security'
 import { SheetsWebService } from './sheets'
+import { SlidesWebService } from './slides'
 
 const serverDirectory = fileURLToPath(new URL('.', import.meta.url))
 const staticRoot = resolve(serverDirectory, '../dist')
@@ -32,6 +36,43 @@ const sheetsService = new SheetsWebService(
   process.env.XLSX_SIDECAR_PATH || join(serverDirectory, 'native', 'xlsx-sidecar'),
   Number(process.env.WEB_MAX_WORKBOOK_BYTES || 64 * 1024 * 1024),
 )
+const slidesService = new SlidesWebService(
+  Number(process.env.WEB_MAX_PRESENTATION_BYTES || 96 * 1024 * 1024),
+  Number(process.env.WEB_MAX_SLIDES_SESSIONS || 64),
+  Number(process.env.WEB_SLIDES_SESSION_TTL_MS || 30 * 60 * 1000),
+)
+const maxRemoteImageBytes = Number(process.env.WEB_MAX_REMOTE_IMAGE_BYTES || 20 * 1024 * 1024)
+const maxAttachmentBytes = Number(process.env.WEB_MAX_ATTACHMENT_BYTES || 50 * 1024 * 1024)
+const attachmentTextCache = new Map<string, string>()
+const attachmentTextExtensions = new Set([
+  'txt',
+  'md',
+  'markdown',
+  'csv',
+  'tsv',
+  'json',
+  'yaml',
+  'yml',
+  'xml',
+  'html',
+  'htm',
+  'log',
+  'js',
+  'ts',
+  'tsx',
+  'jsx',
+  'py',
+  'java',
+  'c',
+  'h',
+  'cpp',
+  'go',
+  'rs',
+  'rb',
+  'sh',
+  'sql',
+  'css',
+])
 
 const mimeTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -87,6 +128,58 @@ async function readJson<T>(request: IncomingMessage): Promise<T> {
   }
 }
 
+async function handleAttachmentText(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  const body = await readJson<{
+    name?: unknown
+    base64?: unknown
+    offset?: unknown
+    maxChars?: unknown
+  }>(request)
+  if (typeof body.name !== 'string' || body.name.length === 0 || body.name.length > 255) {
+    throw new Error('附件名称无效')
+  }
+  if (
+    typeof body.base64 !== 'string' ||
+    body.base64.length > Math.ceil((maxAttachmentBytes * 4) / 3) + 8
+  ) {
+    throw new Error('附件内容无效或过大')
+  }
+  const bytes = Buffer.from(body.base64, 'base64')
+  if (bytes.length === 0 || bytes.length > maxAttachmentBytes) throw new Error('附件内容无效或过大')
+  const ext = extname(body.name).slice(1).toLowerCase()
+  const supported =
+    attachmentTextExtensions.has(ext) || ['docx', 'pdf', 'pptx', 'xlsx'].includes(ext)
+  if (!supported) throw new Error(`不支持 .${ext || 'unknown'} 附件`)
+
+  const cacheKey = `${ext}:${createHash('sha256').update(bytes).digest('hex')}`
+  let text = attachmentTextCache.get(cacheKey)
+  if (text === undefined) {
+    if (attachmentTextExtensions.has(ext)) text = bytes.toString('utf8')
+    else if (ext === 'docx') text = await docxToText(bytes)
+    else if (ext === 'pdf') text = await pdfToText(bytes)
+    else if (ext === 'pptx') text = await pptxToText(bytes)
+    else text = await xlsxToText(bytes)
+    attachmentTextCache.set(cacheKey, text)
+    if (attachmentTextCache.size > 8) {
+      const oldest = attachmentTextCache.keys().next().value
+      if (oldest) attachmentTextCache.delete(oldest)
+    }
+  }
+
+  const offset = Math.max(0, Math.floor(Number(body.offset) || 0))
+  const maxChars = Math.min(100_000, Math.max(1, Math.floor(Number(body.maxChars) || 20_000)))
+  json(response, 200, {
+    ok: true,
+    name: body.name,
+    totalChars: text.length,
+    text: text.slice(offset, offset + maxChars),
+    offset,
+  })
+}
+
 async function customConfig(settings: AiStreamRequest['settings']): Promise<AiProviderConfig> {
   if (settings?.provider !== 'custom') throw new Error('Web 版请先配置自定义模型')
   const source = settings.providers?.custom
@@ -96,6 +189,23 @@ async function customConfig(settings: AiStreamRequest['settings']): Promise<AiPr
     apiKey: source.apiKey,
     model: source.model,
     baseUrl: await validateProviderBaseUrl(source.baseUrl),
+  }
+}
+
+function providerEndpoint(baseUrl: string, path: string): string {
+  return `${baseUrl.replace(/\/$/, '')}/${path.replace(/^\//, '')}`
+}
+
+async function providerError(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as {
+      error?: string | { message?: string }
+      message?: string
+    }
+    if (typeof body.error === 'string') return body.error
+    return body.error?.message || body.message || `HTTP ${response.status}`
+  } catch {
+    return `HTTP ${response.status}`
   }
 }
 
@@ -177,6 +287,286 @@ async function handleStream(request: IncomingMessage, response: ServerResponse):
     }
   } finally {
     response.end()
+  }
+}
+
+const remoteImageExtensions: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+  'image/svg+xml': 'svg',
+  'image/tiff': 'tiff',
+}
+
+async function downloadRemoteImage(source: unknown): Promise<{
+  base64: string
+  ext: string
+  mime: string
+}> {
+  let url = await validatePublicResourceUrl(source)
+  for (let redirect = 0; redirect <= 3; redirect += 1) {
+    const result = await fetch(url, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(15_000),
+      headers: { Accept: 'image/*' },
+    })
+    if (result.status >= 300 && result.status < 400) {
+      const location = result.headers.get('location')
+      if (!location || redirect === 3) throw new Error('远程图片重定向无效')
+      url = await validatePublicResourceUrl(new URL(location, url).toString())
+      continue
+    }
+    if (!result.ok || !result.body) throw new Error(`远程图片返回 HTTP ${result.status}`)
+    const mime = result.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() || ''
+    const ext = remoteImageExtensions[mime]
+    if (!ext) throw new Error('远程资源不是支持的图片格式')
+    const declared = Number(result.headers.get('content-length') || 0)
+    if (declared > maxRemoteImageBytes) throw new Error('远程图片过大')
+    const reader = result.body.getReader()
+    const chunks: Uint8Array[] = []
+    let total = 0
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxRemoteImageBytes) {
+        await reader.cancel()
+        throw new Error('远程图片过大')
+      }
+      chunks.push(value)
+    }
+    return { base64: Buffer.concat(chunks).toString('base64'), ext, mime }
+  }
+  throw new Error('远程图片重定向过多')
+}
+
+interface AiImageRequest {
+  settings: AiStreamRequest['settings']
+  prompt: string
+  model?: string
+  referenceImageUrls?: string[]
+  aspectRatio?: string
+  imageSize?: string
+}
+
+function requestedImageSize(body: AiImageRequest): string {
+  if (body.imageSize && /^\d{3,4}x\d{3,4}$/.test(body.imageSize)) return body.imageSize
+  if (body.aspectRatio === '16:9') return '1536x1024'
+  if (body.aspectRatio === '9:16') return '1024x1536'
+  return '1024x1024'
+}
+
+async function handleImageGeneration(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  const body = await readJson<AiImageRequest>(request)
+  const config = await customConfig(body.settings)
+  const prompt = String(body.prompt || '').trim()
+  if (!prompt || prompt.length > 20_000) throw new Error('图片生成提示词无效')
+  const headers = { Authorization: `Bearer ${config.apiKey}` }
+  let result: Response
+  if (body.referenceImageUrls?.length) {
+    const form = new FormData()
+    form.set('prompt', prompt)
+    form.set('model', body.model || config.model)
+    form.set('size', requestedImageSize(body))
+    for (const [index, source] of body.referenceImageUrls.slice(0, 4).entries()) {
+      const image = await downloadRemoteImage(source)
+      form.append(
+        'image[]',
+        new Blob([Buffer.from(image.base64, 'base64')], { type: image.mime }),
+        `reference-${index + 1}.${image.ext}`,
+      )
+    }
+    result = await fetch(providerEndpoint(config.baseUrl || '', 'images/edits'), {
+      method: 'POST',
+      headers,
+      body: form,
+      signal: AbortSignal.timeout(120_000),
+    })
+  } else {
+    result = await fetch(providerEndpoint(config.baseUrl || '', 'images/generations'), {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt,
+        model: body.model || config.model,
+        size: requestedImageSize(body),
+        n: 1,
+      }),
+      signal: AbortSignal.timeout(120_000),
+    })
+  }
+  if (!result.ok) return json(response, 502, { error: await providerError(result) })
+  const payload = (await result.json()) as {
+    data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>
+  }
+  const image = payload.data?.[0]
+  if (image?.url) return json(response, 200, { url: image.url })
+  if (image?.b64_json)
+    return json(response, 200, { url: `data:image/png;base64,${image.b64_json}` })
+  json(response, 502, { error: '图片模型未返回图片' })
+}
+
+interface AiMediaRequest {
+  settings: AiStreamRequest['settings']
+  mediaUrls: string[]
+  requirements: string
+}
+
+async function handleMediaAnalysis(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  const body = await readJson<AiMediaRequest>(request)
+  const config = await customConfig(body.settings)
+  const mediaUrls = Array.isArray(body.mediaUrls) ? body.mediaUrls.slice(0, 12) : []
+  const requirements = String(body.requirements || '').trim()
+  if (!requirements || requirements.length > 20_000 || mediaUrls.length === 0) {
+    throw new Error('媒体分析请求无效')
+  }
+  for (const url of mediaUrls) {
+    if (!url.startsWith('data:image/')) await validatePublicResourceUrl(url)
+  }
+  const result = await fetch(providerEndpoint(config.baseUrl || '', 'chat/completions'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: config.model,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: requirements },
+            ...mediaUrls.map((url) => ({ type: 'image_url', image_url: { url } })),
+          ],
+        },
+      ],
+    }),
+    signal: AbortSignal.timeout(120_000),
+  })
+  if (!result.ok) return json(response, 502, { error: await providerError(result) })
+  const payload = (await result.json()) as {
+    choices?: Array<{ message?: { content?: string | Array<{ type?: string; text?: string }> } }>
+  }
+  const content = payload.choices?.[0]?.message?.content
+  const text =
+    typeof content === 'string'
+      ? content
+      : content
+          ?.map((item) => item.text || '')
+          .filter(Boolean)
+          .join('\n')
+  json(response, text ? 200 : 502, text ? { text } : { error: '媒体模型未返回分析结果' })
+}
+
+interface SearchRequest {
+  query?: unknown
+  maxResults?: unknown
+}
+
+function searchInput(body: SearchRequest, fallback: number): { query: string; maxResults: number } {
+  const query = typeof body.query === 'string' ? body.query.trim() : ''
+  if (!query || query.length > 500) throw new Error('搜索关键词无效')
+  return {
+    query,
+    maxResults: Math.min(Math.max(Number(body.maxResults) || fallback, 1), 20),
+  }
+}
+
+function plainSnippet(value: unknown): string {
+  return String(value || '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+async function wikipediaSearch(query: string, maxResults: number) {
+  try {
+    const language = /[\u3400-\u9fff]/.test(query) ? 'zh' : 'en'
+    const endpoint = new URL(`https://${language}.wikipedia.org/w/api.php`)
+    endpoint.search = new URLSearchParams({
+      action: 'query',
+      list: 'search',
+      srsearch: query,
+      srlimit: String(maxResults),
+      format: 'json',
+      origin: '*',
+    }).toString()
+    const response = await fetch(endpoint, { signal: AbortSignal.timeout(15_000) })
+    if (!response.ok) return { results: [], method: 'wikipedia' }
+    const payload = (await response.json()) as {
+      query?: { search?: Array<{ title?: string; snippet?: string }> }
+    }
+    return {
+      results: (payload.query?.search || []).map((item) => ({
+        title: String(item.title || ''),
+        url: `https://${language}.wikipedia.org/wiki/${encodeURIComponent(String(item.title || '').replace(/ /g, '_'))}`,
+        snippet: plainSnippet(item.snippet),
+      })),
+      method: 'wikipedia',
+    }
+  } catch {
+    return { results: [], method: 'error' }
+  }
+}
+
+async function wikimediaImageSearch(query: string, maxResults: number) {
+  try {
+    const endpoint = new URL('https://commons.wikimedia.org/w/api.php')
+    endpoint.search = new URLSearchParams({
+      action: 'query',
+      generator: 'search',
+      gsrsearch: query,
+      gsrnamespace: '6',
+      gsrlimit: String(maxResults),
+      prop: 'imageinfo',
+      iiprop: 'url|size',
+      iiurlwidth: '1600',
+      format: 'json',
+      origin: '*',
+    }).toString()
+    const response = await fetch(endpoint, { signal: AbortSignal.timeout(15_000) })
+    if (!response.ok) return { images: [], method: 'wikimedia' }
+    const payload = (await response.json()) as {
+      query?: {
+        pages?: Record<
+          string,
+          {
+            title?: string
+            imageinfo?: Array<{
+              url?: string
+              thumburl?: string
+              descriptionurl?: string
+              width?: number
+              height?: number
+            }>
+          }
+        >
+      }
+    }
+    const images = Object.values(payload.query?.pages || {}).flatMap((page) => {
+      const image = page.imageinfo?.[0]
+      const imageUrl = image?.thumburl || image?.url
+      if (!imageUrl) return []
+      return [
+        {
+          title: String(page.title || '').replace(/^File:/, ''),
+          imageUrl,
+          sourceUrl: image.descriptionurl || image.url || imageUrl,
+          source: 'Wikimedia Commons',
+          ...(typeof image.width === 'number' ? { width: image.width } : {}),
+          ...(typeof image.height === 'number' ? { height: image.height } : {}),
+        },
+      ]
+    })
+    return { images: images.slice(0, maxResults), method: 'wikimedia' }
+  } catch {
+    return { images: [], method: 'error' }
   }
 }
 
@@ -299,7 +689,12 @@ function requestPath(url: URL): string | null {
   return url.pathname.startsWith(`${basePath}/`) ? url.pathname.slice(basePath.length) : null
 }
 
-function serveStatic(pathname: string, response: ServerResponse, headOnly = false): void {
+function serveStatic(
+  pathname: string,
+  response: ServerResponse,
+  headOnly = false,
+  acceptEncoding = '',
+): void {
   if (pathname === '/favicon.ico') {
     response.statusCode = 204
     response.end()
@@ -327,11 +722,19 @@ function serveStatic(pathname: string, response: ServerResponse, headOnly = fals
     'Cache-Control',
     filePath.endsWith('.html') ? 'no-cache' : 'public, max-age=31536000, immutable',
   )
+  const gzipPath = `${filePath}.gz`
+  const servedPath =
+    /(?:^|,)\s*gzip\s*(?:,|$)/i.test(acceptEncoding) && existsSync(gzipPath) ? gzipPath : filePath
+  if (servedPath === gzipPath) {
+    response.setHeader('Content-Encoding', 'gzip')
+    response.setHeader('Vary', 'Accept-Encoding')
+  }
+  response.setHeader('Content-Length', statSync(servedPath).size)
   if (headOnly) {
     response.end()
     return
   }
-  createReadStream(filePath).pipe(response)
+  createReadStream(servedPath).pipe(response)
 }
 
 const server = createServer(async (request, response) => {
@@ -349,6 +752,40 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === 'POST' && pathname === '/api/ai/stream') {
       return await handleStream(request, response)
+    }
+    if (request.method === 'POST' && pathname === '/api/ai/image') {
+      return await handleImageGeneration(request, response)
+    }
+    if (request.method === 'POST' && pathname === '/api/ai/analyze-media') {
+      return await handleMediaAnalysis(request, response)
+    }
+    if (request.method === 'POST' && pathname === '/api/ai/web-search') {
+      const input = searchInput(await readJson<SearchRequest>(request), 6)
+      const result = await webSearch(input.query, input.maxResults)
+      return json(
+        response,
+        200,
+        result.results.length ? result : await wikipediaSearch(input.query, input.maxResults),
+      )
+    }
+    if (request.method === 'POST' && pathname === '/api/ai/image-search') {
+      const input = searchInput(await readJson<SearchRequest>(request), 8)
+      const result = await imageSearch(input.query, input.maxResults)
+      return json(
+        response,
+        200,
+        result.images.length ? result : await wikimediaImageSearch(input.query, input.maxResults),
+      )
+    }
+    if (
+      request.method === 'POST' &&
+      (pathname === '/api/slides/fetch-image' || pathname === '/api/files/fetch-image')
+    ) {
+      const body = await readJson<{ url?: unknown }>(request)
+      return json(response, 200, await downloadRemoteImage(body.url))
+    }
+    if (request.method === 'POST' && pathname === '/api/attachments/text') {
+      return await handleAttachmentText(request, response)
     }
     if (request.method === 'POST' && pathname === '/api/pdf/text/validate') {
       return await handlePdfTextValidate(request, response)
@@ -403,11 +840,48 @@ const server = createServer(async (request, response) => {
       await sheetsService.close(body.sessionId)
       return json(response, 200, { ok: true })
     }
+    if (request.method === 'POST' && pathname === '/api/slides/open') {
+      return json(response, 200, await slidesService.open(await readJson(request)))
+    }
+    if (request.method === 'POST' && pathname === '/api/slides/blank') {
+      const body = await readJson<{ fitWidthPx?: unknown }>(request)
+      return json(response, 200, await slidesService.blank(Number(body.fitWidthPx) || 1280))
+    }
+    if (request.method === 'POST' && pathname === '/api/slides/call') {
+      return json(response, 200, await slidesService.call(await readJson(request)))
+    }
+    if (request.method === 'POST' && pathname === '/api/slides/save') {
+      const body = await readJson<{
+        sessionId?: unknown
+        name?: unknown
+        webPath?: unknown
+      }>(request)
+      if (typeof body.sessionId !== 'string') throw new Error('演示文稿会话无效')
+      return json(
+        response,
+        200,
+        await slidesService.save(
+          body.sessionId,
+          typeof body.name === 'string' ? body.name : undefined,
+          typeof body.webPath === 'string' ? body.webPath : undefined,
+        ),
+      )
+    }
+    if (request.method === 'POST' && pathname === '/api/slides/close') {
+      const body = await readJson<{ sessionId?: unknown }>(request)
+      slidesService.close(body.sessionId)
+      return json(response, 200, { ok: true })
+    }
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       response.setHeader('Allow', 'GET, HEAD, POST')
       return json(response, 405, { error: 'Method not allowed' })
     }
-    serveStatic(pathname, response, request.method === 'HEAD')
+    serveStatic(
+      pathname,
+      response,
+      request.method === 'HEAD',
+      request.headers['accept-encoding'] || '',
+    )
   } catch (error) {
     if (!response.headersSent) {
       json(response, 400, { error: error instanceof Error ? error.message : String(error) })

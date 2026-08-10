@@ -11,6 +11,7 @@ import {
   saveWebAiSettings,
   webAiChat,
   webAiStream,
+  webSearch,
 } from '../lib/ai'
 import {
   consumePendingPath,
@@ -24,8 +25,10 @@ import {
   rememberFileHandle,
   writeBrowserFile,
 } from '../lib/files'
+import { createWebAttachments } from '../lib/attachments'
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+const attachments = createWebAttachments()
 let pendingPath = consumePendingPath()
 const sessionFiles = new Map<string, { path: string; name: string }>()
 
@@ -232,14 +235,14 @@ const desktopApi: DesktopApi = {
   aiGskLogin: async () => {
     window.open('https://www.genspark.ai/', '_blank', 'noopener,noreferrer')
   },
-  webSearch: async () => ({ results: [], method: 'error' }),
+  webSearch,
   onAiStream: onWebAiStream,
-  pickAttachments: async () => null,
-  addAttachmentPaths: async () => ({ accepted: [], rejected: ['Web 版不支持系统文件路径附件'] }),
-  addPastedImage: async () => ({ accepted: [], rejected: ['Web 版暂不支持粘贴图片附件'] }),
-  readAttachment: async () => ({ ok: false, error: 'Web 版暂不支持附件读取' }),
-  readAttachmentImage: async () => ({ ok: false, error: 'Web 版暂不支持附件读取' }),
-  getPathForFile: (file) => file.name,
+  pickAttachments: attachments.pickAttachments,
+  addAttachmentPaths: attachments.addAttachmentPaths,
+  addPastedImage: attachments.addPastedImage,
+  readAttachment: attachments.readAttachment,
+  readAttachmentImage: attachments.readAttachmentImage,
+  getPathForFile: attachments.getPathForFile,
 }
 
 window.desktopApi = desktopApi

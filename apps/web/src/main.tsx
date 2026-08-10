@@ -46,13 +46,14 @@ const modules = [
     accent: 'sheets',
     enabled: true,
   },
-  { name: 'Slides', detail: 'PPTX · 迁移中', icon: Presentation, accent: 'slides', enabled: false },
+  { name: 'Slides', detail: 'PPTX', icon: Presentation, accent: 'slides', enabled: true },
   { name: 'PDF', detail: 'PDF', icon: FileText, accent: 'pdf', enabled: true },
 ] as const
 
 function routeFor(kind: WebFileKind): string {
   if (kind === 'docx') return './docs.html'
   if (kind === 'xlsx') return './sheets.html'
+  if (kind === 'pptx') return './slides.html'
   if (kind === 'pdf') return './pdf.html'
   return './markdown.html'
 }
@@ -60,6 +61,7 @@ function routeFor(kind: WebFileKind): string {
 function kindForName(name: string): WebFileKind | null {
   if (/\.docx$/i.test(name)) return 'docx'
   if (/\.xlsx$/i.test(name)) return 'xlsx'
+  if (/\.pptx$/i.test(name)) return 'pptx'
   if (/\.(md|markdown)$/i.test(name)) return 'markdown'
   if (/\.pdf$/i.test(name)) return 'pdf'
   return null
@@ -67,7 +69,7 @@ function kindForName(name: string): WebFileKind | null {
 
 async function importFile(file: File): Promise<StoredWebFile> {
   const kind = kindForName(file.name)
-  if (!kind) throw new Error('仅支持 .docx、.xlsx、.md、.markdown 和 .pdf 文件')
+  if (!kind) throw new Error('仅支持 .docx、.xlsx、.pptx、.md、.markdown 和 .pdf 文件')
   const stored: StoredWebFile = {
     path: makeWebPath(file.name),
     name: file.name,
@@ -78,9 +80,11 @@ async function importFile(file: File): Promise<StoredWebFile> {
         ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         : kind === 'xlsx'
           ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-          : kind === 'pdf'
-            ? 'application/pdf'
-            : 'text/markdown'),
+          : kind === 'pptx'
+            ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+            : kind === 'pdf'
+              ? 'application/pdf'
+              : 'text/markdown'),
     updatedAt: Date.now(),
     data: kind === 'markdown' ? await file.text() : await file.arrayBuffer(),
   }
@@ -310,7 +314,7 @@ function App() {
                 ref={inputRef}
                 className="visually-hidden"
                 type="file"
-                accept=".docx,.xlsx,.md,.markdown,.pdf"
+                accept=".docx,.xlsx,.pptx,.md,.markdown,.pdf"
                 onChange={(event) => void handleFile(event.target.files?.[0] ?? null)}
               />
             </div>
@@ -323,9 +327,11 @@ function App() {
                     ? 'docx'
                     : module.name === 'Sheets'
                       ? 'xlsx'
-                      : module.name === 'PDF'
-                        ? 'pdf'
-                        : 'markdown'
+                      : module.name === 'Slides'
+                        ? 'pptx'
+                        : module.name === 'PDF'
+                          ? 'pdf'
+                          : 'markdown'
                 return (
                   <button
                     key={module.name}
@@ -367,7 +373,7 @@ function App() {
             <Upload size={22} />
             <div>
               <strong>拖入文件</strong>
-              <span>DOCX · XLSX · MD · MARKDOWN · PDF</span>
+              <span>DOCX · XLSX · PPTX · MD · MARKDOWN · PDF</span>
             </div>
           </section>
 
@@ -397,6 +403,8 @@ function App() {
                         <Menu size={18} />
                       ) : file.kind === 'xlsx' ? (
                         <FileSpreadsheet size={18} />
+                      ) : file.kind === 'pptx' ? (
+                        <Presentation size={18} />
                       ) : (
                         <FileText size={18} />
                       )}
@@ -408,9 +416,11 @@ function App() {
                           ? 'Word 文档'
                           : file.kind === 'xlsx'
                             ? 'Excel 工作簿'
-                            : file.kind === 'pdf'
-                              ? 'PDF 文档'
-                              : 'Markdown 文档'}
+                            : file.kind === 'pptx'
+                              ? 'PowerPoint 演示文稿'
+                              : file.kind === 'pdf'
+                                ? 'PDF 文档'
+                                : 'Markdown 文档'}
                       </small>
                     </span>
                     <time>

@@ -1433,6 +1433,5 @@ export interface SlidesApi {
 declare global {
   interface Window {
     slidesApi: SlidesApi
-    desktop: DesktopFilesApi
   }
 }

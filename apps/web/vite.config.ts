@@ -48,6 +48,7 @@ export default defineConfig({
         markdown: resolve(__dirname, 'markdown.html'),
         pdf: resolve(__dirname, 'pdf.html'),
         sheets: resolve(__dirname, 'sheets.html'),
+        slides: resolve(__dirname, 'slides.html'),
       },
     },
   },

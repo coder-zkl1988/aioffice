@@ -7,7 +7,13 @@ import {
   readTheme,
   writeBrowserFile,
 } from '../lib/files'
-import { cancelWebAiStream, getWebAiSettings, onWebAiStream, webAiStream } from '../lib/ai'
+import {
+  cancelWebAiStream,
+  getWebAiSettings,
+  onWebAiStream,
+  webAiStream,
+  webSearch,
+} from '../lib/ai'
 let currentPath: string | null = null
 
 function base64ToBlob(base64: string, mime: string): Blob {
@@ -130,7 +136,7 @@ const markdownApi: MarkdownApi = {
   aiStream: webAiStream,
   aiStreamCancel: cancelWebAiStream,
   onAiStream: onWebAiStream,
-  webSearch: async () => ({ results: [], answer: 'Web 版搜索服务尚未配置' }),
+  webSearch,
 }
 
 window.markdownApi = markdownApi

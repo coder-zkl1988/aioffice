@@ -1,4 +1,4 @@
-export type WebFileKind = 'docx' | 'markdown' | 'pdf' | 'xlsx'
+export type WebFileKind = 'docx' | 'markdown' | 'pdf' | 'pptx' | 'xlsx'
 
 export interface StoredWebFile {
   path: string
@@ -91,9 +91,11 @@ export async function pickBrowserFile(
       ? '.docx'
       : kind === 'xlsx'
         ? '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        : kind === 'pdf'
-          ? '.pdf,application/pdf'
-          : '.md,.markdown,text/markdown,text/plain'
+        : kind === 'pptx'
+          ? '.pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation'
+          : kind === 'pdf'
+            ? '.pdf,application/pdf'
+            : '.md,.markdown,text/markdown,text/plain'
   let file: File | null = null
   let handle: FileSystemFileHandle | undefined
 
@@ -108,9 +110,11 @@ export async function pickBrowserFile(
                 ? 'Word 文档'
                 : kind === 'xlsx'
                   ? 'Excel 工作簿'
-                  : kind === 'pdf'
-                    ? 'PDF 文档'
-                    : 'Markdown 文档',
+                  : kind === 'pptx'
+                    ? 'PowerPoint 演示文稿'
+                    : kind === 'pdf'
+                      ? 'PDF 文档'
+                      : 'Markdown 文档',
             accept:
               kind === 'docx'
                 ? {
@@ -124,9 +128,14 @@ export async function pickBrowserFile(
                         '.xlsx',
                       ],
                     }
-                  : kind === 'pdf'
-                    ? { 'application/pdf': ['.pdf'] }
-                    : { 'text/markdown': ['.md', '.markdown'] },
+                  : kind === 'pptx'
+                    ? {
+                        'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+                          ['.pptx'],
+                      }
+                    : kind === 'pdf'
+                      ? { 'application/pdf': ['.pdf'] }
+                      : { 'text/markdown': ['.md', '.markdown'] },
           },
         ],
       })

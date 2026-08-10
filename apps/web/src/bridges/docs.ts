@@ -18,7 +18,13 @@ import {
   saveWebAiSettings,
   webAiChat,
   webAiStream,
+  webFetchImage,
+  webImageSearch,
+  webSearch,
 } from '../lib/ai'
+import { createWebAttachments } from '../lib/attachments'
+
+const attachments = createWebAttachments()
 
 async function hash(data: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', data)
@@ -162,29 +168,15 @@ const desktop: DesktopApi = {
   aiGskLogin: async () => {
     window.open('https://www.genspark.ai/', '_blank', 'noopener,noreferrer')
   },
-  webSearch: async () => ({ results: [], method: 'error', error: 'Web 版搜索服务尚未配置' }),
-  imageSearch: async () => ({ images: [], method: 'error', error: 'Web 版图片搜索尚未配置' }),
-  fetchImage: async (url) => {
-    try {
-      const response = await fetch(url)
-      if (!response.ok) return null
-      const blob = await response.blob()
-      const bytes = new Uint8Array(await blob.arrayBuffer())
-      let binary = ''
-      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
-      }
-      return { base64: btoa(binary), mime: blob.type }
-    } catch {
-      return null
-    }
-  },
-  pickAttachments: async () => null,
-  addAttachmentPaths: async () => ({ accepted: [], rejected: ['Web 版暂不支持本地路径附件'] }),
-  addPastedImage: async () => ({ accepted: [], rejected: ['Web 版暂不支持 AI 图片附件'] }),
-  readAttachment: async () => ({ ok: false, error: 'Web 版暂不支持附件读取' }),
-  readAttachmentImage: async () => ({ ok: false, error: 'Web 版暂不支持附件读取' }),
-  getPathForFile: (file) => file.name,
+  webSearch,
+  imageSearch: webImageSearch,
+  fetchImage: webFetchImage,
+  pickAttachments: attachments.pickAttachments,
+  addAttachmentPaths: attachments.addAttachmentPaths,
+  addPastedImage: attachments.addPastedImage,
+  readAttachment: attachments.readAttachment,
+  readAttachmentImage: attachments.readAttachmentImage,
+  getPathForFile: attachments.getPathForFile,
   openNewTab: async (openPath) => {
     if (openPath) queuePendingFile(openPath)
     window.open('./docs.html', '_blank', 'noopener')

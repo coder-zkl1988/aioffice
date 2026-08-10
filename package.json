@@ -16,6 +16,11 @@
     "apps/*",
     "packages/*"
   ],
+  "overrides": {
+    "@univerjs/core": {
+      "nanoid": "6.0.1"
+    }
+  },
   "scripts": {
     "postinstall": "install-electron",
     "format": "node tools/format-changed.mjs --write",

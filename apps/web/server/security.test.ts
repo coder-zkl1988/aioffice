@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { validateProviderBaseUrl } from './security'
+import { validateProviderBaseUrl, validatePublicResourceUrl } from './security'
 
 describe('validateProviderBaseUrl', () => {
   it('accepts a public HTTPS API URL', async () => {
@@ -17,5 +17,12 @@ describe('validateProviderBaseUrl', () => {
     'https://[::1]/v1',
   ])('rejects unsafe URL %s', async (url) => {
     await expect(validateProviderBaseUrl(url)).rejects.toThrow()
+  })
+
+  it('allows public resource query parameters but rejects private resources', async () => {
+    await expect(
+      validatePublicResourceUrl('https://api.openai.com/photo.png?size=large'),
+    ).resolves.toContain('?size=large')
+    await expect(validatePublicResourceUrl('https://127.0.0.1/photo.png')).rejects.toThrow()
   })
 })

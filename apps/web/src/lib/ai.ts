@@ -17,6 +17,106 @@ function apiUrl(action: 'chat' | 'stream'): URL {
   return new URL(`./api/ai/${action}`, document.baseURI)
 }
 
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(new URL(path, document.baseURI), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const result = (await response.json().catch(() => ({}))) as T & { error?: string }
+  if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`)
+  return result
+}
+
+export async function webSearch(
+  query: string,
+  maxResults = 6,
+): Promise<{
+  results: Array<{ title: string; url: string; snippet: string }>
+  answer?: string
+  method: string
+  error?: string
+}> {
+  try {
+    return await postJson('./api/ai/web-search', { query, maxResults })
+  } catch (error) {
+    return {
+      results: [],
+      method: 'error',
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+export async function webImageSearch(
+  query: string,
+  maxResults = 8,
+): Promise<{
+  images: Array<{
+    title: string
+    imageUrl: string
+    sourceUrl: string
+    source: string
+    width?: number
+    height?: number
+  }>
+  method: string
+  error?: string
+}> {
+  try {
+    return await postJson('./api/ai/image-search', { query, maxResults })
+  } catch (error) {
+    return {
+      images: [],
+      method: 'error',
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+export async function webFetchImage(
+  url: string,
+): Promise<{ base64: string; mime: string; ext: string } | null> {
+  const data = /^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=]+)$/i.exec(url)
+  if (data) {
+    return {
+      base64: data[2]!,
+      mime: data[1]!,
+      ext: data[1]!.split('/')[1]!.replace('jpeg', 'jpg').replace('svg+xml', 'svg'),
+    }
+  }
+  try {
+    return await postJson('./api/files/fetch-image', { url })
+  } catch {
+    return null
+  }
+}
+
+export async function webGenerateImage(op: {
+  prompt: string
+  model?: string
+  referenceImageUrls?: string[]
+  aspectRatio?: string
+  imageSize?: string
+}): Promise<{ url?: string; error?: string }> {
+  try {
+    return await postJson('./api/ai/image', { ...op, settings: getWebAiSettings() })
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+export async function webAnalyzeMedia(op: {
+  mediaUrls: string[]
+  requirements: string
+}): Promise<{ text?: string; error?: string }> {
+  try {
+    return await postJson('./api/ai/analyze-media', { ...op, settings: getWebAiSettings() })
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 async function responseError(response: Response): Promise<string> {
   try {
     const body = (await response.json()) as { error?: string }

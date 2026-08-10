@@ -45,40 +45,54 @@ function isBlockedAddress(address: string): boolean {
   return true
 }
 
-export async function validateProviderBaseUrl(value: unknown): Promise<string> {
-  if (typeof value !== 'string' || value.length > 2048) throw new Error('Base URL 无效')
+async function validatePublicUrl(
+  value: unknown,
+  options: { allowQuery: boolean; label: string },
+): Promise<URL> {
+  if (typeof value !== 'string' || value.length > 4096) throw new Error(`${options.label} 无效`)
 
   let url: URL
   try {
     url = new URL(value)
   } catch {
-    throw new Error('Base URL 格式不正确')
+    throw new Error(`${options.label} 格式不正确`)
   }
 
   const allowHttp = process.env.AI_ALLOW_HTTP === 'true'
   const allowPrivateNetwork = process.env.AI_ALLOW_PRIVATE_NETWORK === 'true'
   if (url.protocol !== 'https:' && !(allowHttp && url.protocol === 'http:')) {
-    throw new Error('Base URL 必须使用 HTTPS')
+    throw new Error(`${options.label} 必须使用 HTTPS`)
   }
-  if (url.username || url.password) throw new Error('Base URL 不能包含用户名或密码')
-  if (url.search || url.hash) throw new Error('Base URL 不能包含查询参数或锚点')
+  if (url.username || url.password) throw new Error(`${options.label} 不能包含用户名或密码`)
+  if ((!options.allowQuery && url.search) || url.hash) {
+    throw new Error(`${options.label} 包含不允许的查询参数或锚点`)
+  }
 
   const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
   if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost')) {
-    throw new Error('Base URL 不能指向本机或内网')
+    throw new Error(`${options.label} 不能指向本机或内网`)
   }
 
-  if (allowPrivateNetwork) return url.toString().replace(/\/$/, '')
+  if (allowPrivateNetwork) return url
 
   const literalFamily = isIP(hostname)
   if (literalFamily) {
-    if (isBlockedAddress(hostname)) throw new Error('Base URL 不能指向本机或内网')
+    if (isBlockedAddress(hostname)) throw new Error(`${options.label} 不能指向本机或内网`)
   } else {
     const addresses = await lookup(hostname, { all: true, verbatim: true })
     if (addresses.length === 0 || addresses.some(({ address }) => isBlockedAddress(address))) {
-      throw new Error('Base URL 不能解析到本机或内网')
+      throw new Error(`${options.label} 不能解析到本机或内网`)
     }
   }
 
+  return url
+}
+
+export async function validateProviderBaseUrl(value: unknown): Promise<string> {
+  const url = await validatePublicUrl(value, { allowQuery: false, label: 'Base URL' })
   return url.toString().replace(/\/$/, '')
+}
+
+export async function validatePublicResourceUrl(value: unknown): Promise<string> {
+  return (await validatePublicUrl(value, { allowQuery: true, label: '资源 URL' })).toString()
 }
