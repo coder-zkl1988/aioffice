@@ -1,6 +1,7 @@
 node_modules
 out/
 dist/
+dist-server/
 release/
 *.log
 .DS_Store
@@ -28,6 +29,7 @@ electron-builder.env
 
 # Playwright artifacts
 /test-results/
+/.playwright-cli/
 
 .cursor/rules/git-remote.mdc
 __pycache__/

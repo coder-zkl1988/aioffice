@@ -1,0 +1,46 @@
+{
+  "name": "@genoffice/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser-native GenOffice workspace",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && npm run build:server",
+    "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist-server/server.mjs",
+    "serve": "node dist-server/server.mjs",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@genoffice/ai-provider": "*",
+    "@genoffice/docs": "*",
+    "@genoffice/i18n": "*",
+    "@genoffice/markdown": "*",
+    "@genoffice/project-store": "*",
+    "@genoffice/ui": "*",
+    "@tiptap/core": "3.29.2",
+    "@tiptap/extension-code-block": "3.29.2",
+    "@tiptap/extension-image": "3.29.2",
+    "@tiptap/extension-list": "3.29.2",
+    "@tiptap/extension-table": "3.29.2",
+    "@tiptap/extensions": "3.29.2",
+    "@tiptap/markdown": "3.29.2",
+    "@tiptap/pm": "3.29.2",
+    "@tiptap/react": "3.29.2",
+    "@tiptap/starter-kit": "3.29.2",
+    "@tiptap/suggestion": "3.29.2",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.0.4",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "vitest": "^4.1.0"
+  }
+}

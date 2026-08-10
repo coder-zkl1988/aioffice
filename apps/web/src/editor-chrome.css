@@ -1,0 +1,24 @@
+.web-editor-back {
+  position: fixed;
+  z-index: 10000;
+  top: 8px;
+  left: 8px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid var(--border, #e3e6ea);
+  border-radius: 6px;
+  background: var(--surface, #fff);
+  color: var(--text-secondary, #606366);
+  font:
+    12px/1 system-ui,
+    sans-serif;
+  text-decoration: none;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 8%);
+}
+
+.web-editor-back:hover {
+  background: var(--hover, #f3f2f1);
+  color: var(--text, #242424);
+}
