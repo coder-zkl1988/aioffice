@@ -1,4 +1,4 @@
-export type WebFileKind = 'docx' | 'markdown' | 'pdf'
+export type WebFileKind = 'docx' | 'markdown' | 'pdf' | 'xlsx'
 
 export interface StoredWebFile {
   path: string
@@ -89,9 +89,11 @@ export async function pickBrowserFile(
   const accept =
     kind === 'docx'
       ? '.docx'
-      : kind === 'pdf'
-        ? '.pdf,application/pdf'
-        : '.md,.markdown,text/markdown,text/plain'
+      : kind === 'xlsx'
+        ? '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        : kind === 'pdf'
+          ? '.pdf,application/pdf'
+          : '.md,.markdown,text/markdown,text/plain'
   let file: File | null = null
   let handle: FileSystemFileHandle | undefined
 
@@ -102,7 +104,13 @@ export async function pickBrowserFile(
         types: [
           {
             description:
-              kind === 'docx' ? 'Word 文档' : kind === 'pdf' ? 'PDF 文档' : 'Markdown 文档',
+              kind === 'docx'
+                ? 'Word 文档'
+                : kind === 'xlsx'
+                  ? 'Excel 工作簿'
+                  : kind === 'pdf'
+                    ? 'PDF 文档'
+                    : 'Markdown 文档',
             accept:
               kind === 'docx'
                 ? {
@@ -110,9 +118,15 @@ export async function pickBrowserFile(
                       '.docx',
                     ],
                   }
-                : kind === 'pdf'
-                  ? { 'application/pdf': ['.pdf'] }
-                  : { 'text/markdown': ['.md', '.markdown'] },
+                : kind === 'xlsx'
+                  ? {
+                      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': [
+                        '.xlsx',
+                      ],
+                    }
+                  : kind === 'pdf'
+                    ? { 'application/pdf': ['.pdf'] }
+                    : { 'text/markdown': ['.md', '.markdown'] },
           },
         ],
       })
@@ -134,6 +148,10 @@ export async function pickBrowserFile(
 
 export function getFileHandle(path: string): FileSystemFileHandle | undefined {
   return handles.get(path)
+}
+
+export function rememberFileHandle(path: string, handle: FileSystemFileHandle): void {
+  handles.set(path, handle)
 }
 
 function extensionName(name: string, extension: string): string {

@@ -41,10 +41,10 @@ const modules = [
   { name: 'Markdown', detail: 'MD', icon: Menu, accent: 'markdown', enabled: true },
   {
     name: 'Sheets',
-    detail: 'XLSX · 迁移中',
+    detail: 'XLSX',
     icon: FileSpreadsheet,
     accent: 'sheets',
-    enabled: false,
+    enabled: true,
   },
   { name: 'Slides', detail: 'PPTX · 迁移中', icon: Presentation, accent: 'slides', enabled: false },
   { name: 'PDF', detail: 'PDF', icon: FileText, accent: 'pdf', enabled: true },
@@ -52,12 +52,14 @@ const modules = [
 
 function routeFor(kind: WebFileKind): string {
   if (kind === 'docx') return './docs.html'
+  if (kind === 'xlsx') return './sheets.html'
   if (kind === 'pdf') return './pdf.html'
   return './markdown.html'
 }
 
 function kindForName(name: string): WebFileKind | null {
   if (/\.docx$/i.test(name)) return 'docx'
+  if (/\.xlsx$/i.test(name)) return 'xlsx'
   if (/\.(md|markdown)$/i.test(name)) return 'markdown'
   if (/\.pdf$/i.test(name)) return 'pdf'
   return null
@@ -65,7 +67,7 @@ function kindForName(name: string): WebFileKind | null {
 
 async function importFile(file: File): Promise<StoredWebFile> {
   const kind = kindForName(file.name)
-  if (!kind) throw new Error('仅支持 .docx、.md、.markdown 和 .pdf 文件')
+  if (!kind) throw new Error('仅支持 .docx、.xlsx、.md、.markdown 和 .pdf 文件')
   const stored: StoredWebFile = {
     path: makeWebPath(file.name),
     name: file.name,
@@ -74,9 +76,11 @@ async function importFile(file: File): Promise<StoredWebFile> {
       file.type ||
       (kind === 'docx'
         ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        : kind === 'pdf'
-          ? 'application/pdf'
-          : 'text/markdown'),
+        : kind === 'xlsx'
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : kind === 'pdf'
+            ? 'application/pdf'
+            : 'text/markdown'),
     updatedAt: Date.now(),
     data: kind === 'markdown' ? await file.text() : await file.arrayBuffer(),
   }
@@ -148,7 +152,25 @@ function App() {
     }
   }
 
-  const newFile = (kind: WebFileKind) => {
+  const newFile = async (kind: WebFileKind) => {
+    if (kind === 'xlsx') {
+      const response = await fetch(new URL('./api/sheets/blank', document.baseURI))
+      if (!response.ok) throw new Error('无法创建空白工作簿')
+      const result = (await response.json()) as { name: string; xlsxBase64: string }
+      const binary = atob(result.xlsxBase64)
+      const data = Uint8Array.from(binary, (character) => character.charCodeAt(0)).buffer
+      const file: StoredWebFile = {
+        path: makeWebPath(result.name),
+        name: result.name,
+        kind: 'xlsx',
+        mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        updatedAt: Date.now(),
+        data,
+      }
+      await putStoredFile(file)
+      openStored(file)
+      return
+    }
     sessionStorage.removeItem('genoffice.web.pending')
     window.location.href = routeFor(kind)
   }
@@ -288,7 +310,7 @@ function App() {
                 ref={inputRef}
                 className="visually-hidden"
                 type="file"
-                accept=".docx,.md,.markdown,.pdf"
+                accept=".docx,.xlsx,.md,.markdown,.pdf"
                 onChange={(event) => void handleFile(event.target.files?.[0] ?? null)}
               />
             </div>
@@ -297,13 +319,19 @@ function App() {
               {modules.map((module) => {
                 const Icon = module.icon
                 const kind =
-                  module.name === 'Docs' ? 'docx' : module.name === 'PDF' ? 'pdf' : 'markdown'
+                  module.name === 'Docs'
+                    ? 'docx'
+                    : module.name === 'Sheets'
+                      ? 'xlsx'
+                      : module.name === 'PDF'
+                        ? 'pdf'
+                        : 'markdown'
                 return (
                   <button
                     key={module.name}
                     className={`module-tile module-${module.accent}`}
                     disabled={!module.enabled}
-                    onClick={() => module.enabled && newFile(kind as WebFileKind)}
+                    onClick={() => module.enabled && void newFile(kind as WebFileKind)}
                   >
                     <span className="module-icon">
                       <Icon size={23} />
@@ -339,7 +367,7 @@ function App() {
             <Upload size={22} />
             <div>
               <strong>拖入文件</strong>
-              <span>DOCX · MD · MARKDOWN · PDF</span>
+              <span>DOCX · XLSX · MD · MARKDOWN · PDF</span>
             </div>
           </section>
 
@@ -365,16 +393,24 @@ function App() {
                 {visibleRecent.map((file) => (
                   <button key={file.path} className="recent-row" onClick={() => openStored(file)}>
                     <span className={`file-type file-${file.kind}`}>
-                      {file.kind === 'markdown' ? <Menu size={18} /> : <FileText size={18} />}
+                      {file.kind === 'markdown' ? (
+                        <Menu size={18} />
+                      ) : file.kind === 'xlsx' ? (
+                        <FileSpreadsheet size={18} />
+                      ) : (
+                        <FileText size={18} />
+                      )}
                     </span>
                     <span className="file-info">
                       <strong>{file.name}</strong>
                       <small>
                         {file.kind === 'docx'
                           ? 'Word 文档'
-                          : file.kind === 'pdf'
-                            ? 'PDF 文档'
-                            : 'Markdown 文档'}
+                          : file.kind === 'xlsx'
+                            ? 'Excel 工作簿'
+                            : file.kind === 'pdf'
+                              ? 'PDF 文档'
+                              : 'Markdown 文档'}
                       </small>
                     </span>
                     <time>

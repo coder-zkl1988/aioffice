@@ -47,6 +47,7 @@ export default defineConfig({
         docs: resolve(__dirname, 'docs.html'),
         markdown: resolve(__dirname, 'markdown.html'),
         pdf: resolve(__dirname, 'pdf.html'),
+        sheets: resolve(__dirname, 'sheets.html'),
       },
     },
   },

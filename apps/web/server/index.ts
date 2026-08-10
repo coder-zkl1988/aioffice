@@ -21,12 +21,17 @@ import {
 import { applyTextEdits, listEditFonts, validateTextEdits } from '../../pdf/src/main/text-edit'
 import type { ImageEditInput, PagePreviewRequest, TextEditInput } from '../../pdf/src/shared/ipc'
 import { validateProviderBaseUrl } from './security'
+import { SheetsWebService } from './sheets'
 
 const serverDirectory = fileURLToPath(new URL('.', import.meta.url))
 const staticRoot = resolve(serverDirectory, '../dist')
 const port = Number(process.env.PORT || 80)
 const basePath = normalizeBasePath(process.env.WEB_BASE_PATH || '/')
 const maxRequestBytes = Number(process.env.WEB_MAX_REQUEST_BYTES || 128 * 1024 * 1024)
+const sheetsService = new SheetsWebService(
+  process.env.XLSX_SIDECAR_PATH || join(serverDirectory, 'native', 'xlsx-sidecar'),
+  Number(process.env.WEB_MAX_WORKBOOK_BYTES || 64 * 1024 * 1024),
+)
 
 const mimeTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -365,6 +370,38 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === 'POST' && pathname === '/api/pdf/images/apply') {
       return await handlePdfImageApply(request, response)
+    }
+    if (request.method === 'GET' && pathname === '/api/sheets/blank') {
+      return json(response, 200, await sheetsService.blank())
+    }
+    if (request.method === 'POST' && pathname === '/api/sheets/open') {
+      return json(response, 200, await sheetsService.open(await readJson(request)))
+    }
+    if (request.method === 'POST' && pathname === '/api/sheets/range') {
+      return json(response, 200, await sheetsService.readRange(await readJson(request)))
+    }
+    if (request.method === 'POST' && pathname === '/api/sheets/formulas') {
+      return json(response, 200, await sheetsService.readFormulas(await readJson(request)))
+    }
+    if (request.method === 'POST' && pathname === '/api/sheets/recalc') {
+      return json(response, 200, await sheetsService.recalc(await readJson(request)))
+    }
+    if (request.method === 'POST' && pathname === '/api/sheets/media') {
+      return json(response, 200, await sheetsService.readMedia(await readJson(request)))
+    }
+    if (request.method === 'POST' && pathname === '/api/sheets/pivot') {
+      return json(response, 200, await sheetsService.readPivot(await readJson(request)))
+    }
+    if (request.method === 'POST' && pathname === '/api/sheets/save') {
+      return json(response, 200, await sheetsService.save(await readJson(request)))
+    }
+    if (request.method === 'POST' && pathname === '/api/sheets/recovery') {
+      return json(response, 200, await sheetsService.writeRecovery(await readJson(request)))
+    }
+    if (request.method === 'POST' && pathname === '/api/sheets/close') {
+      const body = await readJson<{ sessionId?: unknown }>(request)
+      await sheetsService.close(body.sessionId)
+      return json(response, 200, { ok: true })
     }
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       response.setHeader('Allow', 'GET, HEAD, POST')

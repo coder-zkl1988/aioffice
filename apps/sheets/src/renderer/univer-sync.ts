@@ -1535,10 +1535,12 @@ async function loadRange(
       }
     } else if (isActiveSheet(runtime, sheetId)) {
       setMessage(
-        t('appStreamingRows', {
-          name: state.file.name,
-          rows: sheet?.rowCount.toLocaleString() ?? '?',
-        }),
+        state.formulaMode && state.flags.preloadComplete
+          ? t('appFullyLoaded')
+          : t('appStreamingRows', {
+              name: state.file.name,
+              rows: sheet?.rowCount.toLocaleString() ?? '?',
+            }),
       )
     }
   } catch (error: unknown) {
