@@ -34,6 +34,42 @@ layer.
 - **macOS, Windows, Linux.**
 - **Free & open-source (Apache-2.0).**
 
+## Web edition
+
+`apps/web` packages the shared GenOffice editors as a browser workspace. It supports
+DOCX, XLSX, PPTX, PDF, and Markdown open/edit/save flows, browser-local recent files,
+AI attachments, presentation mode, and browser print/export workflows. Files remain
+in the current browser unless the user explicitly downloads or saves them; temporary
+Sheets and Slides server sessions are kept in memory and expire automatically.
+
+The Web workspace uses an OpenAI-compatible third-party model endpoint. Open **AI
+model settings** in the workspace and provide:
+
+- **Base URL** — for example `https://api.example.com/v1`
+- **API Key** — sent only to the configured endpoint through the GenOffice server
+- **Model** — the provider's model identifier
+
+The server accepts public HTTPS endpoints by default and blocks loopback/private
+network targets. Development-only HTTP or private-network endpoints can be enabled
+with `AI_ALLOW_HTTP=true` and `AI_ALLOW_PRIVATE_NETWORK=true`.
+
+```bash
+npm install
+npm run dev:web
+
+# Production build
+npm run build:web
+PORT=8080 WEB_BASE_PATH=/ node apps/web/dist-server/server.mjs
+
+# Container build
+docker build -f apps/web/Dockerfile -t genoffice-web .
+docker run --rm -p 8080:80 genoffice-web
+```
+
+When mounted below a reverse-proxy prefix, set `WEB_BASE_PATH` to that exact prefix.
+The production iSpace deployment in this fork is available at
+`/svc/zongkelong/genoffice-web/` after signing in to iSpace.
+
 ## Download
 
 | Platform                             | Requirements                                          | Download                                                                                                                         |

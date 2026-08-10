@@ -220,6 +220,7 @@ const desktopApi: DesktopApi = {
     window.open(parsed.href, '_blank', 'noopener,noreferrer')
   },
   onMenuAction: menuActions,
+  onChromePressed: () => () => {},
   onWorkbookRenamed: () => () => {},
   notifyPendingEdits: () => {},
   onCloseSaveRequest: () => () => {},

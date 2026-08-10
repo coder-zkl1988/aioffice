@@ -1,3 +1,5 @@
+import html2canvas from 'html2canvas'
+import { PDFDocument } from 'pdf-lib'
 import type { DesktopApi, OpenFileResult, PickImageResult } from '../../../docs/src/shared/ipc'
 import {
   consumePendingPath,
@@ -25,6 +27,72 @@ import {
 import { createWebAttachments } from '../lib/attachments'
 
 const attachments = createWebAttachments()
+
+function base64FromBytes(data: Uint8Array): string {
+  let binary = ''
+  for (let offset = 0; offset < data.length; offset += 0x8000) {
+    binary += String.fromCharCode(...data.subarray(offset, offset + 0x8000))
+  }
+  return btoa(binary)
+}
+
+function bytesFromBase64(value: string): Uint8Array {
+  const binary = atob(value)
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0))
+}
+
+async function renderVisiblePreviewPages(
+  pageWidthTwips: number,
+  pageHeightTwips: number,
+): Promise<string> {
+  const pages = [...document.querySelectorAll<HTMLElement>('.pv-page:not(.pv-print-skip)')]
+  if (pages.length === 0) throw new Error('请先打开分页预览后再导出混合纸张 PDF')
+
+  const output = await PDFDocument.create()
+  const widthPoints = pageWidthTwips / 20
+  const heightPoints = pageHeightTwips / 20
+  const scale = Math.min(2, Math.max(1, window.devicePixelRatio || 1))
+  for (const element of pages) {
+    const canvas = await html2canvas(element, {
+      backgroundColor: '#ffffff',
+      logging: false,
+      scale,
+      useCORS: true,
+    })
+    const image = await output.embedPng(canvas.toDataURL('image/png'))
+    const page = output.addPage([widthPoints, heightPoints])
+    page.drawImage(image, { x: 0, y: 0, width: widthPoints, height: heightPoints })
+  }
+  return base64FromBytes(await output.save())
+}
+
+async function saveMergedPdf(
+  defaultName: string,
+  base64Parts: string[],
+  outPath?: string,
+): Promise<{ ok: boolean; path?: string; error?: string }> {
+  try {
+    const output = await PDFDocument.create()
+    for (const value of base64Parts) {
+      const part = await PDFDocument.load(bytesFromBase64(value))
+      const pages = await output.copyPages(part, part.getPageIndices())
+      for (const page of pages) output.addPage(page)
+    }
+    const bytes = await output.save()
+    const saved = await writeBrowserFile({
+      path: outPath,
+      name: defaultName.replace(/\.docx$/i, ''),
+      extension: '.pdf',
+      mime: 'application/pdf',
+      blob: new Blob([new Uint8Array(bytes).buffer as ArrayBuffer], { type: 'application/pdf' }),
+      forcePicker: !outPath,
+    })
+    return { ok: true, path: saved.path }
+  } catch (error) {
+    if ((error as DOMException).name === 'AbortError') return { ok: false }
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
 
 async function hash(data: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', data)
@@ -159,8 +227,17 @@ const desktop: DesktopApi = {
     window.print()
     return { ok: true, path: 'browser-print-dialog' }
   },
-  printPdfBuffer: async () => ({ ok: false, error: 'Web 版请使用浏览器打印并选择“另存为 PDF”' }),
-  saveMergedPdf: async () => ({ ok: false, error: 'Web 版暂不支持合并打印片段' }),
+  printPdfBuffer: async (pageWidthTwips, pageHeightTwips) => {
+    try {
+      return {
+        ok: true,
+        base64: await renderVisiblePreviewPages(pageWidthTwips, pageHeightTwips),
+      }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  },
+  saveMergedPdf,
   aiChat: webAiChat,
   aiStream: webAiStream,
   aiStreamCancel: cancelWebAiStream,

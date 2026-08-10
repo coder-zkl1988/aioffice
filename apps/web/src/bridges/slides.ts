@@ -2,9 +2,6 @@ import { PDFDocument } from 'pdf-lib'
 import html2canvas from 'html2canvas'
 import PptxGenJS from 'pptxgenjs'
 import type {
-  AttachmentAddResult,
-  AttachmentImageResult,
-  AttachmentReadResult,
   AudienceNavAction,
   DesktopFilesApi,
   OpenResult,
@@ -12,6 +9,7 @@ import type {
   ShowSyncState,
   SlidesApi,
 } from '../../../slides/src/shared/ipc'
+import { createWebAttachments } from '../lib/attachments'
 import {
   cancelWebAiStream,
   getWebAiSettings,
@@ -47,7 +45,7 @@ let pendingPath = consumePendingPath()
 let sessionId: string | null = null
 let currentFile: { path: string; name: string } | null = null
 let exportPdfName = 'presentation.pdf'
-const attachments = new Map<string, File>()
+const webAttachments = createWebAttachments()
 const STYLE_TEMPLATES_KEY = 'genoffice.web.slides.style-templates'
 const STYLE_SIDECARS_KEY = 'genoffice.web.slides.style-sidecars'
 const PRESENTER_SESSION_KEY = 'genoffice.web.slides.presenter-session'
@@ -685,65 +683,13 @@ window.slidesApi = new Proxy(localApi, {
   },
 }) as SlidesApi
 
-function attachmentMeta(path: string, file: File) {
-  return {
-    path,
-    name: file.name,
-    ext: file.name.split('.').pop()?.toLowerCase() ?? '',
-    sizeBytes: file.size,
-  }
-}
-
-function pickAttachmentFiles(): Promise<File[]> {
-  return new Promise((resolve) => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.multiple = true
-    input.onchange = () => resolve([...input.files!])
-    input.oncancel = () => resolve([])
-    input.click()
-  })
-}
-
-async function addFiles(files: File[]): Promise<AttachmentAddResult> {
-  const accepted = files.map((file) => {
-    const path = `attachment://${crypto.randomUUID()}/${encodeURIComponent(file.name)}`
-    attachments.set(path, file)
-    return attachmentMeta(path, file)
-  })
-  return { accepted, rejected: [] }
-}
-
 const desktopFiles: DesktopFilesApi = {
-  pickAttachments: async () => addFiles(await pickAttachmentFiles()),
-  addAttachmentPaths: async () => ({
-    accepted: [],
-    rejected: ['Web 版不接受系统绝对路径，请使用附件选择按钮'],
-  }),
-  addPastedImage: async (data, ext) =>
-    addFiles([new File([data], `pasted-image.${ext}`, { type: `image/${ext}` })]),
-  readAttachment: async (path, offset, maxChars): Promise<AttachmentReadResult> => {
-    const file = attachments.get(path)
-    if (!file) return { ok: false, error: '附件不存在' }
-    const text = await file.text()
-    return {
-      ok: true,
-      name: file.name,
-      totalChars: text.length,
-      text: text.slice(offset, offset + maxChars),
-      offset,
-    }
-  },
-  readAttachmentImage: async (path): Promise<AttachmentImageResult> => {
-    const file = attachments.get(path)
-    if (!file) return { ok: false, error: '附件不存在' }
-    return { ok: true, base64: base64FromBytes(await file.arrayBuffer()), mime: file.type }
-  },
-  getPathForFile: (file) => {
-    const path = `attachment://${crypto.randomUUID()}/${encodeURIComponent(file.name)}`
-    attachments.set(path, file)
-    return path
-  },
+  pickAttachments: webAttachments.pickAttachments,
+  addAttachmentPaths: webAttachments.addAttachmentPaths,
+  addPastedImage: webAttachments.addPastedImage,
+  readAttachment: webAttachments.readAttachment,
+  readAttachmentImage: webAttachments.readAttachmentImage,
+  getPathForFile: webAttachments.getPathForFile,
 }
 
 window.desktop = desktopFiles as unknown as Window['desktop']
