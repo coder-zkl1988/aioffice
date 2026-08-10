@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && npm run build:server",
-    "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist-server/server.mjs",
+    "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --target=node22 --banner:js=\"import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);\" --outfile=dist-server/server.mjs && node scripts/copy-runtime-assets.mjs",
     "serve": "node dist-server/server.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
     "test": "vitest run"
@@ -33,11 +33,13 @@
     "lucide-react": "^0.468.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.2.108",
+    "pngjs": "^7.0.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",

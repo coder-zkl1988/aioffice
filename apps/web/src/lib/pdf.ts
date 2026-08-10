@@ -1,13 +1,117 @@
 import { PDFDocument, degrees, rgb } from 'pdf-lib'
 import type {
   DrawingInput,
+  ImageEditFailure,
+  ImageEditInput,
   MarkupInput,
+  PageImageRef,
+  PagePreviewRequest,
   SavePdfRequest,
   StampInput,
   TextEditFailure,
+  TextEditInput,
+  TextEditValidation,
 } from '../../../pdf/src/shared/ipc'
 
 const color = ([red, green, blue]: [number, number, number]) => rgb(red, green, blue)
+
+function base64FromBytes(data: ArrayBuffer): string {
+  const bytes = new Uint8Array(data)
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  }
+  return btoa(binary)
+}
+
+function bytesFromBase64(value: string): ArrayBuffer {
+  const binary = atob(value)
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0)).buffer
+}
+
+async function pdfApi<T>(action: string, body?: unknown): Promise<T> {
+  const response = await fetch(new URL(`./api/pdf/${action}`, document.baseURI), {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const result = (await response.json().catch(() => ({}))) as { error?: string }
+    throw new Error(result.error || `PDF 服务返回 HTTP ${response.status}`)
+  }
+  return (await response.json()) as T
+}
+
+export async function validateWebPdfTextEdits(
+  source: ArrayBuffer,
+  edits: TextEditInput[],
+): Promise<TextEditValidation[]> {
+  const result = await pdfApi<{ validations: TextEditValidation[] }>('text/validate', {
+    pdfBase64: base64FromBytes(source),
+    edits,
+  })
+  return result.validations
+}
+
+export async function applyWebPdfTextEdits(
+  source: ArrayBuffer,
+  edits: TextEditInput[],
+): Promise<{ data: ArrayBuffer; skipped: TextEditFailure[] }> {
+  const result = await pdfApi<{ pdfBase64: string; skipped: TextEditFailure[] }>('text/apply', {
+    pdfBase64: base64FromBytes(source),
+    edits,
+  })
+  return { data: bytesFromBase64(result.pdfBase64), skipped: result.skipped }
+}
+
+export async function listWebPdfEditFonts(): Promise<string[]> {
+  return (await pdfApi<{ fonts: string[] }>('fonts')).fonts
+}
+
+export async function listWebPdfPageImages(source: ArrayBuffer): Promise<PageImageRef[]> {
+  return (
+    await pdfApi<{ images: PageImageRef[] }>('images/list', {
+      pdfBase64: base64FromBytes(source),
+    })
+  ).images
+}
+
+export async function renderWebPdfPageImage(
+  source: ArrayBuffer,
+  pageIndex: number,
+  rect: [number, number, number, number],
+): Promise<string | null> {
+  return (
+    await pdfApi<{ pngBase64: string | null }>('images/render', {
+      pdfBase64: base64FromBytes(source),
+      pageIndex,
+      rect,
+    })
+  ).pngBase64
+}
+
+export async function renderWebPdfPagePreview(
+  source: ArrayBuffer,
+  request: Omit<PagePreviewRequest, 'path'>,
+): Promise<string | null> {
+  return (
+    await pdfApi<{ pngBase64: string | null }>('images/preview', {
+      pdfBase64: base64FromBytes(source),
+      ...request,
+    })
+  ).pngBase64
+}
+
+export async function applyWebPdfImageEdits(
+  source: ArrayBuffer,
+  edits: ImageEditInput[],
+): Promise<{ data: ArrayBuffer; skipped: ImageEditFailure[] }> {
+  const result = await pdfApi<{ pdfBase64: string; skipped: ImageEditFailure[] }>('images/apply', {
+    pdfBase64: base64FromBytes(source),
+    edits,
+  })
+  return { data: bytesFromBase64(result.pdfBase64), skipped: result.skipped }
+}
 
 function bounds(values: number[]): [number, number, number, number] {
   const xs = values.filter((_, index) => index % 2 === 0)

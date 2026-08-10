@@ -1,4 +1,4 @@
-import type { PdfApi } from '../../../pdf/src/shared/ipc'
+import type { ImageEditFailure, PdfApi, TextEditFailure } from '../../../pdf/src/shared/ipc'
 import { cancelWebAiStream, getWebAiSettings, onWebAiStream, webAiStream } from '../lib/ai'
 import {
   consumePendingPath,
@@ -9,7 +9,18 @@ import {
   readTheme,
   writeBrowserFile,
 } from '../lib/files'
-import { applyWebPdfSave, extractWebPdf, insertWebPdf } from '../lib/pdf'
+import {
+  applyWebPdfSave,
+  applyWebPdfImageEdits,
+  applyWebPdfTextEdits,
+  extractWebPdf,
+  insertWebPdf,
+  listWebPdfEditFonts,
+  listWebPdfPageImages,
+  renderWebPdfPageImage,
+  renderWebPdfPagePreview,
+  validateWebPdfTextEdits,
+} from '../lib/pdf'
 
 let currentPath: string | null = null
 
@@ -45,8 +56,20 @@ const pdfApi: PdfApi = {
   readFile: pdfBytes,
   save: async (request) => {
     try {
-      const source = await pdfBytes(request.path)
-      const result = await applyWebPdfSave(source, request)
+      let source = await pdfBytes(request.path)
+      let skippedTextEdits: TextEditFailure[] = []
+      let skippedImageEdits: ImageEditFailure[] = []
+      if (request.textEdits?.length) {
+        const textResult = await applyWebPdfTextEdits(source, request.textEdits)
+        source = textResult.data
+        skippedTextEdits = textResult.skipped
+      }
+      if (request.imageEdits?.length) {
+        const imageResult = await applyWebPdfImageEdits(source, request.imageEdits)
+        source = imageResult.data
+        skippedImageEdits = imageResult.skipped
+      }
+      const result = await applyWebPdfSave(source, { ...request, textEdits: [], imageEdits: [] })
       const data = bytesToArrayBuffer(result.bytes)
       if (request.targetPath) {
         await writeBrowserFile({
@@ -61,19 +84,21 @@ const pdfApi: PdfApi = {
       }
       return {
         ok: true,
-        skippedTextEdits: result.skippedTextEdits,
-        skippedImageEdits: result.skippedImageEdits,
+        skippedTextEdits: [...skippedTextEdits, ...result.skippedTextEdits],
+        skippedImageEdits: [...skippedImageEdits, ...result.skippedImageEdits],
       }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
   },
-  validateTextEdits: async ({ edits }) =>
-    edits.map(() => ({ reason: 'Web 版暂不支持修改 PDF 内容流文本' })),
-  listEditFonts: async () => [],
-  listPageImages: async () => [],
-  pageImagePng: async () => null,
-  pagePreviewPng: async () => null,
+  validateTextEdits: async ({ path, edits }) =>
+    validateWebPdfTextEdits(await pdfBytes(path), edits),
+  listEditFonts: listWebPdfEditFonts,
+  listPageImages: async (path) => listWebPdfPageImages(await pdfBytes(path)),
+  pageImagePng: async ({ path, pageIndex, rect }) =>
+    renderWebPdfPageImage(await pdfBytes(path), pageIndex, rect),
+  pagePreviewPng: async ({ path, ...request }) =>
+    renderWebPdfPagePreview(await pdfBytes(path), request),
   extractPages: async (request) => {
     try {
       const data = bytesToArrayBuffer(

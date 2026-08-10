@@ -12,13 +12,21 @@ import {
   type AiStreamChunk,
   type AiStreamRequest,
 } from '@genoffice/ai-provider'
+import {
+  applyImageEdits,
+  listPageImages,
+  renderImagePng,
+  renderPagePreviewPng,
+} from '../../pdf/src/main/image-edit'
+import { applyTextEdits, listEditFonts, validateTextEdits } from '../../pdf/src/main/text-edit'
+import type { ImageEditInput, PagePreviewRequest, TextEditInput } from '../../pdf/src/shared/ipc'
 import { validateProviderBaseUrl } from './security'
 
 const serverDirectory = fileURLToPath(new URL('.', import.meta.url))
 const staticRoot = resolve(serverDirectory, '../dist')
 const port = Number(process.env.PORT || 80)
 const basePath = normalizeBasePath(process.env.WEB_BASE_PATH || '/')
-const maxRequestBytes = Number(process.env.AI_MAX_REQUEST_BYTES || 32 * 1024 * 1024)
+const maxRequestBytes = Number(process.env.WEB_MAX_REQUEST_BYTES || 128 * 1024 * 1024)
 
 const mimeTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -167,6 +175,119 @@ async function handleStream(request: IncomingMessage, response: ServerResponse):
   }
 }
 
+interface PdfRequest {
+  pdfBase64: string
+}
+
+interface PdfTextRequest extends PdfRequest {
+  edits: TextEditInput[]
+}
+
+function pdfPayload(body: PdfRequest): Uint8Array {
+  if (typeof body.pdfBase64 !== 'string') throw new Error('PDF 请求无效')
+  const bytes = Buffer.from(body.pdfBase64, 'base64')
+  if (bytes.length < 5 || bytes.subarray(0, 5).toString('ascii') !== '%PDF-') {
+    throw new Error('PDF 文件无效')
+  }
+  return bytes
+}
+
+function pdfTextPayload(body: PdfTextRequest): { bytes: Uint8Array; edits: TextEditInput[] } {
+  if (!Array.isArray(body.edits)) throw new Error('PDF 文字编辑请求无效')
+  return { bytes: pdfPayload(body), edits: body.edits }
+}
+
+async function handlePdfTextValidate(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  const { bytes, edits } = pdfTextPayload(await readJson<PdfTextRequest>(request))
+  json(response, 200, { validations: await validateTextEdits(bytes, edits) })
+}
+
+async function handlePdfTextApply(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  const { bytes, edits } = pdfTextPayload(await readJson<PdfTextRequest>(request))
+  const result = await applyTextEdits(bytes, edits)
+  json(response, 200, {
+    pdfBase64: Buffer.from(result.bytes).toString('base64'),
+    skipped: result.skipped,
+  })
+}
+
+async function handlePdfImagesList(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  const bytes = pdfPayload(await readJson<PdfRequest>(request))
+  json(response, 200, { images: await listPageImages(bytes) })
+}
+
+interface PdfImageRenderRequest extends PdfRequest {
+  pageIndex: number
+  rect: [number, number, number, number]
+}
+
+async function handlePdfImageRender(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  const body = await readJson<PdfImageRenderRequest>(request)
+  if (!Number.isInteger(body.pageIndex) || !Array.isArray(body.rect)) {
+    throw new Error('PDF 图片渲染请求无效')
+  }
+  json(response, 200, {
+    pngBase64: await renderImagePng(pdfPayload(body), body.pageIndex, body.rect),
+  })
+}
+
+interface PdfPagePreviewRequest extends PdfRequest, Omit<PagePreviewRequest, 'path'> {}
+
+async function handlePdfPagePreview(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  const body = await readJson<PdfPagePreviewRequest>(request)
+  const { pageIndex, excludeRects, clip, pxWidth, rotate } = body
+  if (
+    !Number.isInteger(pageIndex) ||
+    !Array.isArray(excludeRects) ||
+    !clip ||
+    typeof pxWidth !== 'number' ||
+    typeof rotate !== 'number'
+  ) {
+    throw new Error('PDF 页面预览请求无效')
+  }
+  json(response, 200, {
+    pngBase64: await renderPagePreviewPng(pdfPayload(body), {
+      pageIndex,
+      excludeRects,
+      clip,
+      pxWidth,
+      rotate,
+    }),
+  })
+}
+
+interface PdfImageApplyRequest extends PdfRequest {
+  edits: ImageEditInput[]
+}
+
+async function handlePdfImageApply(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  const body = await readJson<PdfImageApplyRequest>(request)
+  if (!Array.isArray(body.edits)) throw new Error('PDF 图片编辑请求无效')
+  const result = await applyImageEdits(pdfPayload(body), body.edits)
+  json(response, 200, {
+    pdfBase64: Buffer.from(result.bytes).toString('base64'),
+    skipped: result.skipped,
+  })
+}
+
 function requestPath(url: URL): string | null {
   if (basePath === '/') return url.pathname
   if (url.pathname === basePath) return ''
@@ -223,6 +344,27 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === 'POST' && pathname === '/api/ai/stream') {
       return await handleStream(request, response)
+    }
+    if (request.method === 'POST' && pathname === '/api/pdf/text/validate') {
+      return await handlePdfTextValidate(request, response)
+    }
+    if (request.method === 'POST' && pathname === '/api/pdf/text/apply') {
+      return await handlePdfTextApply(request, response)
+    }
+    if (request.method === 'GET' && pathname === '/api/pdf/fonts') {
+      return json(response, 200, { fonts: listEditFonts() })
+    }
+    if (request.method === 'POST' && pathname === '/api/pdf/images/list') {
+      return await handlePdfImagesList(request, response)
+    }
+    if (request.method === 'POST' && pathname === '/api/pdf/images/render') {
+      return await handlePdfImageRender(request, response)
+    }
+    if (request.method === 'POST' && pathname === '/api/pdf/images/preview') {
+      return await handlePdfPagePreview(request, response)
+    }
+    if (request.method === 'POST' && pathname === '/api/pdf/images/apply') {
+      return await handlePdfImageApply(request, response)
     }
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       response.setHeader('Allow', 'GET, HEAD, POST')
