@@ -1,6 +1,7 @@
 import type { ProjectApi } from '@genoffice/project-store'
 import type { DesktopApi } from '../../docs/src/shared/ipc'
 import type { MarkdownApi } from '../../markdown/src/shared/ipc'
+import type { PdfApi } from '../../pdf/src/shared/ipc'
 
 declare global {
   interface FileSystemWritableFileStream {
@@ -19,6 +20,7 @@ declare global {
     showSaveFilePicker?: (options?: unknown) => Promise<FileSystemFileHandle>
     desktop: DesktopApi
     markdownApi: MarkdownApi
+    pdfApi: PdfApi
     projectApi: ProjectApi
   }
 }

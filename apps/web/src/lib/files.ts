@@ -1,4 +1,4 @@
-export type WebFileKind = 'docx' | 'markdown'
+export type WebFileKind = 'docx' | 'markdown' | 'pdf'
 
 export interface StoredWebFile {
   path: string
@@ -86,7 +86,12 @@ function pickWithInput(accept: string): Promise<File | null> {
 export async function pickBrowserFile(
   kind: WebFileKind,
 ): Promise<{ file: File; path: string } | null> {
-  const accept = kind === 'docx' ? '.docx' : '.md,.markdown,text/markdown,text/plain'
+  const accept =
+    kind === 'docx'
+      ? '.docx'
+      : kind === 'pdf'
+        ? '.pdf,application/pdf'
+        : '.md,.markdown,text/markdown,text/plain'
   let file: File | null = null
   let handle: FileSystemFileHandle | undefined
 
@@ -96,7 +101,8 @@ export async function pickBrowserFile(
         multiple: false,
         types: [
           {
-            description: kind === 'docx' ? 'Word 文档' : 'Markdown 文档',
+            description:
+              kind === 'docx' ? 'Word 文档' : kind === 'pdf' ? 'PDF 文档' : 'Markdown 文档',
             accept:
               kind === 'docx'
                 ? {
@@ -104,7 +110,9 @@ export async function pickBrowserFile(
                       '.docx',
                     ],
                   }
-                : { 'text/markdown': ['.md', '.markdown'] },
+                : kind === 'pdf'
+                  ? { 'application/pdf': ['.pdf'] }
+                  : { 'text/markdown': ['.md', '.markdown'] },
           },
         ],
       })

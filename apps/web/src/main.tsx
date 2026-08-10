@@ -47,22 +47,25 @@ const modules = [
     enabled: false,
   },
   { name: 'Slides', detail: 'PPTX · 迁移中', icon: Presentation, accent: 'slides', enabled: false },
-  { name: 'PDF', detail: 'PDF · 迁移中', icon: FileText, accent: 'pdf', enabled: false },
+  { name: 'PDF', detail: 'PDF', icon: FileText, accent: 'pdf', enabled: true },
 ] as const
 
 function routeFor(kind: WebFileKind): string {
-  return kind === 'docx' ? './docs.html' : './markdown.html'
+  if (kind === 'docx') return './docs.html'
+  if (kind === 'pdf') return './pdf.html'
+  return './markdown.html'
 }
 
 function kindForName(name: string): WebFileKind | null {
   if (/\.docx$/i.test(name)) return 'docx'
   if (/\.(md|markdown)$/i.test(name)) return 'markdown'
+  if (/\.pdf$/i.test(name)) return 'pdf'
   return null
 }
 
 async function importFile(file: File): Promise<StoredWebFile> {
   const kind = kindForName(file.name)
-  if (!kind) throw new Error('仅支持 .docx、.md 和 .markdown 文件')
+  if (!kind) throw new Error('仅支持 .docx、.md、.markdown 和 .pdf 文件')
   const stored: StoredWebFile = {
     path: makeWebPath(file.name),
     name: file.name,
@@ -71,9 +74,11 @@ async function importFile(file: File): Promise<StoredWebFile> {
       file.type ||
       (kind === 'docx'
         ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        : 'text/markdown'),
+        : kind === 'pdf'
+          ? 'application/pdf'
+          : 'text/markdown'),
     updatedAt: Date.now(),
-    data: kind === 'docx' ? await file.arrayBuffer() : await file.text(),
+    data: kind === 'markdown' ? await file.text() : await file.arrayBuffer(),
   }
   await putStoredFile(stored)
   return stored
@@ -283,7 +288,7 @@ function App() {
                 ref={inputRef}
                 className="visually-hidden"
                 type="file"
-                accept=".docx,.md,.markdown"
+                accept=".docx,.md,.markdown,.pdf"
                 onChange={(event) => void handleFile(event.target.files?.[0] ?? null)}
               />
             </div>
@@ -291,7 +296,8 @@ function App() {
             <div className="module-grid">
               {modules.map((module) => {
                 const Icon = module.icon
-                const kind = module.name === 'Docs' ? 'docx' : 'markdown'
+                const kind =
+                  module.name === 'Docs' ? 'docx' : module.name === 'PDF' ? 'pdf' : 'markdown'
                 return (
                   <button
                     key={module.name}
@@ -333,7 +339,7 @@ function App() {
             <Upload size={22} />
             <div>
               <strong>拖入文件</strong>
-              <span>DOCX · MD · MARKDOWN</span>
+              <span>DOCX · MD · MARKDOWN · PDF</span>
             </div>
           </section>
 
@@ -359,11 +365,17 @@ function App() {
                 {visibleRecent.map((file) => (
                   <button key={file.path} className="recent-row" onClick={() => openStored(file)}>
                     <span className={`file-type file-${file.kind}`}>
-                      {file.kind === 'docx' ? <FileText size={18} /> : <Menu size={18} />}
+                      {file.kind === 'markdown' ? <Menu size={18} /> : <FileText size={18} />}
                     </span>
                     <span className="file-info">
                       <strong>{file.name}</strong>
-                      <small>{file.kind === 'docx' ? 'Word 文档' : 'Markdown 文档'}</small>
+                      <small>
+                        {file.kind === 'docx'
+                          ? 'Word 文档'
+                          : file.kind === 'pdf'
+                            ? 'PDF 文档'
+                            : 'Markdown 文档'}
+                      </small>
                     </span>
                     <time>
                       {new Intl.DateTimeFormat('zh-CN', {
