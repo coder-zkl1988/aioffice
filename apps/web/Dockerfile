@@ -18,7 +18,11 @@ RUN npm run build:web
 
 FROM node:24-alpine
 
-RUN apk add --no-cache font-dejavu font-liberation font-noto-cjk libgcc
+ARG ALPINE_MIRROR
+RUN if [ -n "$ALPINE_MIRROR" ]; then \
+      sed -i "s#dl-cdn.alpinelinux.org#$ALPINE_MIRROR#g" /etc/apk/repositories; \
+    fi \
+ && apk add --no-cache font-dejavu font-liberation font-noto-cjk libgcc
 
 WORKDIR /app
 COPY --from=web-builder /source/apps/web/dist ./dist
