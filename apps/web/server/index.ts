@@ -203,6 +203,23 @@ function providerEndpoint(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, '')}/${path.replace(/^\//, '')}`
 }
 
+function aiLogContext(config: AiProviderConfig, requestId: string, startedAt: number) {
+  let provider = 'custom'
+  try {
+    const url = new URL(config.baseUrl || '')
+    provider = `${url.host}${url.pathname.replace(/\/$/, '')}`
+  } catch {
+    // customConfig already validates this URL; retain a non-sensitive fallback for diagnostics.
+  }
+  return {
+    requestId,
+    provider,
+    model: config.model,
+    reasoningEffort: config.reasoningEffort || 'default',
+    durationMs: Date.now() - startedAt,
+  }
+}
+
 async function providerError(response: Response): Promise<string> {
   try {
     const body = (await response.json()) as {
@@ -250,6 +267,7 @@ async function handleStream(request: IncomingMessage, response: ServerResponse):
   const config = await customConfig(body.settings)
   const requestId = String(body.requestId || '')
   if (!requestId || requestId.length > 128) throw new Error('requestId 无效')
+  const startedAt = Date.now()
 
   const controller = new AbortController()
   request.once('aborted', () => controller.abort())
@@ -273,6 +291,9 @@ async function handleStream(request: IncomingMessage, response: ServerResponse):
       send({ requestId, type: 'ping' })
     }
   }
+  ping()
+  const keepAliveTimer = setInterval(ping, 5_000)
+  keepAliveTimer.unref()
 
   try {
     let stopReason: string | undefined
@@ -294,7 +315,20 @@ async function handleStream(request: IncomingMessage, response: ServerResponse):
       },
     )
     send({ requestId, type: 'done', stopReason })
+    console.info(
+      JSON.stringify({
+        event: 'ai_stream_complete',
+        ...aiLogContext(config, requestId, startedAt),
+      }),
+    )
   } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: 'ai_stream_error',
+        ...aiLogContext(config, requestId, startedAt),
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    )
     if (controller.signal.aborted) {
       send({ requestId, type: 'done' })
     } else {
@@ -310,6 +344,7 @@ async function handleStream(request: IncomingMessage, response: ServerResponse):
       })
     }
   } finally {
+    clearInterval(keepAliveTimer)
     response.end()
   }
 }

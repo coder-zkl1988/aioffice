@@ -127,11 +127,40 @@ export async function webAnalyzeMedia(op: {
 
 async function responseError(response: Response): Promise<string> {
   try {
-    const body = (await response.json()) as { error?: string }
-    return body.error || `HTTP ${response.status}`
+    const body = (await response.json()) as {
+      error?: string | { message?: string }
+      message?: string
+    }
+    if (typeof body.error === 'string' && body.error) return body.error
+    const nestedMessage =
+      body.error && typeof body.error === 'object' ? body.error.message : undefined
+    return nestedMessage || body.message || `HTTP ${response.status}`
   } catch {
     return `HTTP ${response.status}`
   }
+}
+
+async function readAiStream(
+  response: Response,
+  onChunk: (chunk: AiStreamChunk) => void,
+): Promise<void> {
+  if (!response.ok || !response.body) throw new Error(await responseError(response))
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      if (line.trim()) onChunk(JSON.parse(line) as AiStreamChunk)
+    }
+  }
+  buffer += decoder.decode()
+  if (buffer.trim()) onChunk(JSON.parse(buffer) as AiStreamChunk)
 }
 
 function emit(chunk: AiStreamChunk): void {
@@ -161,13 +190,29 @@ export function saveWebAiSettings(settings: AiSettings): void {
 
 export async function webAiChat(request: AiChatRequest): Promise<AiChatResponse> {
   try {
-    const response = await fetch(apiUrl('chat'), {
+    const requestId = crypto.randomUUID()
+    const response = await fetch(apiUrl('stream'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
+      body: JSON.stringify({
+        requestId,
+        settings: request.settings,
+        system: request.system,
+        messages: [{ role: 'user', text: request.user }],
+        tools: [],
+        maxTokens: 8192,
+      } satisfies AiStreamRequest),
     })
-    if (!response.ok) return { ok: false, error: await responseError(response) }
-    return (await response.json()) as AiChatResponse
+    let content = ''
+    let streamError = ''
+    await readAiStream(response, (chunk) => {
+      if (chunk.requestId !== requestId) return
+      if (chunk.type === 'delta') content += chunk.text || ''
+      else if (chunk.type === 'error') streamError = chunk.error || '模型生成失败'
+    })
+    if (streamError) return { ok: false, error: streamError }
+    if (!content) return { ok: false, error: '模型未返回内容' }
+    return { ok: true, content }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
@@ -184,22 +229,7 @@ export async function webAiStream(request: AiStreamRequest): Promise<void> {
       body: JSON.stringify(request),
       signal: controller.signal,
     })
-    if (!response.ok || !response.body) throw new Error(await responseError(response))
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (const line of lines) {
-        if (line.trim()) emit(JSON.parse(line) as AiStreamChunk)
-      }
-    }
-    if (buffer.trim()) emit(JSON.parse(buffer) as AiStreamChunk)
+    await readAiStream(response, emit)
   } catch (error) {
     emit(
       controller.signal.aborted
