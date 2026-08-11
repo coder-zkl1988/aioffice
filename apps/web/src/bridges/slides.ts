@@ -150,6 +150,22 @@ async function persistPresentation(path: string, name: string, data: ArrayBuffer
   })
 }
 
+async function persistGeneratedPresentation(target: {
+  path: string
+  name: string
+}): Promise<{ path: string; slides: OpenResult['slides'] }> {
+  if (!sessionId) throw new Error('no file open')
+  const saved = await slidesRequest<{
+    ok: true
+    path: string
+    slides: OpenResult['slides']
+    pptxBase64: string
+  }>('save', { sessionId, name: target.name, webPath: target.path })
+  await persistPresentation(saved.path, target.name, bytesFromBase64(saved.pptxBase64))
+  currentFile = { path: saved.path, name: target.name }
+  return { path: saved.path, slides: saved.slides }
+}
+
 async function openPresentation(
   path: string,
   name: string,
@@ -490,10 +506,21 @@ async function htmlToPptx(
         deckName,
       },
     ])
-    currentFile = {
+    const generatedFile = {
       path: result.path,
       name: deckName.toLowerCase().endsWith('.pptx') ? deckName : `${deckName}.pptx`,
     }
+    currentFile = generatedFile
+    let persistedResult: Pick<OpenResult, 'path' | 'slides'> | undefined
+    try {
+      persistedResult = await persistGeneratedPresentation(generatedFile)
+    } catch (error) {
+      console.warn(
+        '[slides] Failed to persist AI-generated draft to browser storage; the in-memory session still works:',
+        error,
+      )
+    }
+    const completedResult = persistedResult ? { ...result, ...persistedResult } : result
     const imagePageOffset =
       mode === 'append'
         ? (result.appendedFrom ?? 0)
@@ -504,13 +531,13 @@ async function htmlToPptx(
             : 0
     return imageFailures.length
       ? {
-          ...result,
+          ...completedResult,
           imageFailures: imageFailures.map((failure) => ({
             ...failure,
             page: failure.page + imagePageOffset,
           })),
         }
-      : result
+      : completedResult
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) }
   }
