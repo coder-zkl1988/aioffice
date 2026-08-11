@@ -1,17 +1,31 @@
+ARG ALPINE_MIRROR
+
 FROM rust:alpine AS xlsx-sidecar-builder
 
-RUN apk add --no-cache musl-dev
+ARG ALPINE_MIRROR
+ARG CARGO_REGISTRIES_CRATES_IO_INDEX
+
+RUN if [ -n "$ALPINE_MIRROR" ]; then \
+      sed -i "s#dl-cdn.alpinelinux.org#$ALPINE_MIRROR#g" /etc/apk/repositories; \
+    fi \
+ && apk add --no-cache musl-dev
 
 WORKDIR /build
 COPY apps/sheets/native/xlsx-engine/Cargo.toml apps/sheets/native/xlsx-engine/Cargo.lock ./
 COPY apps/sheets/native/xlsx-engine/src ./src
-RUN cargo build --release --locked
+RUN if [ -n "$CARGO_REGISTRIES_CRATES_IO_INDEX" ]; then \
+      export CARGO_REGISTRIES_CRATES_IO_INDEX="$CARGO_REGISTRIES_CRATES_IO_INDEX"; \
+    fi \
+ && cargo build --release --locked
 
 FROM node:24-alpine AS web-builder
 
+ARG NPM_REGISTRY
+
 WORKDIR /source
 COPY . .
-RUN npm ci --ignore-scripts
+RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi \
+ && npm ci --ignore-scripts
 COPY --from=xlsx-sidecar-builder /build/target/release/xlsx-sidecar \
   /source/apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar
 RUN npm run build:web
