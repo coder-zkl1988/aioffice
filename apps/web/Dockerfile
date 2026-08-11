@@ -14,9 +14,10 @@ WORKDIR /build
 COPY apps/sheets/native/xlsx-engine/Cargo.toml apps/sheets/native/xlsx-engine/Cargo.lock ./
 COPY apps/sheets/native/xlsx-engine/src ./src
 RUN if [ -n "$CARGO_REGISTRY" ]; then \
-      mkdir -p /root/.cargo; \
+      cargo_config_dir="${CARGO_HOME:-/root/.cargo}"; \
+      mkdir -p "$cargo_config_dir"; \
       printf '[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
-        "$CARGO_REGISTRY" > /root/.cargo/config.toml; \
+        "$CARGO_REGISTRY" > "$cargo_config_dir/config.toml"; \
     fi \
  && cargo build --release --locked
 
