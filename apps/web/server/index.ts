@@ -10,6 +10,7 @@ import {
   streamForProvider,
   type AiChatRequest,
   type AiProviderConfig,
+  type AiReasoningEffort,
   type AiStreamChunk,
   type AiStreamRequest,
 } from '@genoffice/ai-provider'
@@ -23,6 +24,7 @@ import {
 } from '../../pdf/src/main/image-edit'
 import { applyTextEdits, listEditFonts, validateTextEdits } from '../../pdf/src/main/text-edit'
 import type { ImageEditInput, PagePreviewRequest, TextEditInput } from '../../pdf/src/shared/ipc'
+import { normalizeProviderModels } from './ai-models'
 import { validateProviderBaseUrl, validatePublicResourceUrl } from './security'
 import { SheetsWebService } from './sheets'
 import { SlidesWebService } from './slides'
@@ -185,10 +187,15 @@ async function customConfig(settings: AiStreamRequest['settings']): Promise<AiPr
   const source = settings.providers?.custom
   if (!source?.apiKey || source.apiKey.length > 8192) throw new Error('请填写 API Key')
   if (!source.model || source.model.length > 256) throw new Error('请填写模型名称')
+  const reasoningEffort = source.reasoningEffort || 'default'
+  if (!['default', 'low', 'medium', 'high'].includes(reasoningEffort)) {
+    throw new Error('思考强度无效')
+  }
   return {
     apiKey: source.apiKey,
     model: source.model,
     baseUrl: await validateProviderBaseUrl(source.baseUrl),
+    reasoningEffort: reasoningEffort as AiReasoningEffort,
   }
 }
 
@@ -207,6 +214,23 @@ async function providerError(response: Response): Promise<string> {
   } catch {
     return `HTTP ${response.status}`
   }
+}
+
+async function handleModels(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const body = await readJson<{ baseUrl?: unknown; apiKey?: unknown }>(request)
+  if (typeof body.apiKey !== 'string' || !body.apiKey || body.apiKey.length > 8192) {
+    throw new Error('请填写 API Key')
+  }
+  const baseUrl = await validateProviderBaseUrl(body.baseUrl)
+  const result = await fetch(providerEndpoint(baseUrl, 'models'), {
+    headers: { Authorization: `Bearer ${body.apiKey}`, Accept: 'application/json' },
+    redirect: 'error',
+    signal: AbortSignal.timeout(20_000),
+  })
+  if (!result.ok) return json(response, 502, { error: await providerError(result) })
+  const models = normalizeProviderModels(await result.json())
+  if (models.length === 0) return json(response, 502, { error: '接口未返回可用模型' })
+  json(response, 200, { models })
 }
 
 async function handleChat(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -436,6 +460,9 @@ async function handleMediaAnalysis(
     headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: config.model,
+      ...(config.reasoningEffort && config.reasoningEffort !== 'default'
+        ? { reasoning_effort: config.reasoningEffort }
+        : {}),
       messages: [
         {
           role: 'user',
@@ -747,6 +774,9 @@ const server = createServer(async (request, response) => {
     }
     const pathname = requestPath(url)
     if (pathname === null) return json(response, 404, { error: 'Not found' })
+    if (request.method === 'POST' && pathname === '/api/ai/models') {
+      return await handleModels(request, response)
+    }
     if (request.method === 'POST' && pathname === '/api/ai/chat') {
       return await handleChat(request, response)
     }

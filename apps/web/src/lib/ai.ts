@@ -17,6 +17,14 @@ function apiUrl(action: 'chat' | 'stream'): URL {
   return new URL(`./api/ai/${action}`, document.baseURI)
 }
 
+export async function listWebAiModels(input: {
+  baseUrl: string
+  apiKey: string
+}): Promise<string[]> {
+  const result = await postJson<{ models: string[] }>('./api/ai/models', input)
+  return Array.isArray(result.models) ? result.models : []
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(new URL(path, document.baseURI), {
     method: 'POST',

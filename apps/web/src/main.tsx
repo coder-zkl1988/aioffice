@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import {
   ArrowRight,
   Check,
+  ChevronDown,
   Clock3,
   Eye,
   EyeOff,
@@ -10,10 +11,12 @@ import {
   FileText,
   FolderOpen,
   Home,
+  LoaderCircle,
   Menu,
   Moon,
   PanelLeftClose,
   Presentation,
+  RefreshCw,
   Search,
   Settings2,
   Sparkles,
@@ -21,6 +24,7 @@ import {
   Upload,
   X,
 } from 'lucide-react'
+import type { AiReasoningEffort } from '@genoffice/ai-provider'
 import '@genoffice/ui/tokens.css'
 import './workspace.css'
 import {
@@ -31,10 +35,22 @@ import {
   type StoredWebFile,
   type WebFileKind,
 } from './lib/files'
-import { getWebAiSettings, saveWebAiSettings, testWebAiConnection } from './lib/ai'
+import { getWebAiSettings, listWebAiModels, saveWebAiSettings, testWebAiConnection } from './lib/ai'
 
 type Theme = 'light' | 'dark'
-type AiDraft = { baseUrl: string; apiKey: string; model: string }
+type AiDraft = {
+  baseUrl: string
+  apiKey: string
+  model: string
+  reasoningEffort: AiReasoningEffort
+}
+
+const reasoningOptions: Array<{ value: AiReasoningEffort; label: string }> = [
+  { value: 'default', label: '自动' },
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+]
 
 const modules = [
   { name: 'Docs', detail: 'DOCX', icon: FileText, accent: 'docs', enabled: true },
@@ -105,8 +121,19 @@ function App() {
   const [showApiKey, setShowApiKey] = useState(false)
   const [aiDraft, setAiDraft] = useState<AiDraft>(() => {
     const config = getWebAiSettings().providers.custom
-    return { baseUrl: config.baseUrl || '', apiKey: config.apiKey, model: config.model }
+    return {
+      baseUrl: config.baseUrl || '',
+      apiKey: config.apiKey,
+      model: config.model,
+      reasoningEffort: config.reasoningEffort || 'default',
+    }
   })
+  const [modelOptions, setModelOptions] = useState<string[]>([])
+  const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  const [modelStatus, setModelStatus] = useState<{
+    kind: 'idle' | 'loading' | 'ok' | 'error'
+    text: string
+  }>({ kind: 'idle', text: '' })
   const [aiStatus, setAiStatus] = useState<{
     kind: 'idle' | 'testing' | 'ok' | 'error'
     text: string
@@ -181,7 +208,15 @@ function App() {
 
   const openAiSettings = () => {
     const config = getWebAiSettings().providers.custom
-    setAiDraft({ baseUrl: config.baseUrl || '', apiKey: config.apiKey, model: config.model })
+    setAiDraft({
+      baseUrl: config.baseUrl || '',
+      apiKey: config.apiKey,
+      model: config.model,
+      reasoningEffort: config.reasoningEffort || 'default',
+    })
+    setModelOptions([])
+    setModelMenuOpen(false)
+    setModelStatus({ kind: 'idle', text: '' })
     setAiStatus({ kind: 'idle', text: '' })
     setAiSettingsOpen(true)
   }
@@ -197,8 +232,34 @@ function App() {
           baseUrl: aiDraft.baseUrl.trim(),
           apiKey: aiDraft.apiKey.trim(),
           model: aiDraft.model.trim(),
+          reasoningEffort: aiDraft.reasoningEffort,
         },
       },
+    }
+  }
+
+  const discoverModels = async () => {
+    const baseUrl = aiDraft.baseUrl.trim()
+    const apiKey = aiDraft.apiKey.trim()
+    if (!baseUrl || !apiKey) {
+      setModelStatus({ kind: 'error', text: '请先填写 Base URL 和 API Key' })
+      return
+    }
+    setModelMenuOpen(false)
+    setModelStatus({ kind: 'loading', text: '正在获取模型列表...' })
+    try {
+      const models = await listWebAiModels({ baseUrl, apiKey })
+      setModelOptions(models)
+      setAiDraft((current) => ({ ...current, model: current.model || models[0] || '' }))
+      setModelMenuOpen(true)
+      setModelStatus({ kind: 'ok', text: `已获取 ${models.length} 个模型` })
+    } catch (reason) {
+      setModelOptions([])
+      setModelMenuOpen(false)
+      setModelStatus({
+        kind: 'error',
+        text: reason instanceof Error ? reason.message : String(reason),
+      })
     }
   }
 
@@ -479,9 +540,12 @@ function App() {
                 <input
                   type="url"
                   value={aiDraft.baseUrl}
-                  onChange={(event) =>
+                  onChange={(event) => {
                     setAiDraft((current) => ({ ...current, baseUrl: event.target.value }))
-                  }
+                    setModelOptions([])
+                    setModelMenuOpen(false)
+                    setModelStatus({ kind: 'idle', text: '' })
+                  }}
                   placeholder="https://api.example.com/v1"
                   autoComplete="url"
                 />
@@ -492,9 +556,12 @@ function App() {
                   <input
                     type={showApiKey ? 'text' : 'password'}
                     value={aiDraft.apiKey}
-                    onChange={(event) =>
+                    onChange={(event) => {
                       setAiDraft((current) => ({ ...current, apiKey: event.target.value }))
-                    }
+                      setModelOptions([])
+                      setModelMenuOpen(false)
+                      setModelStatus({ kind: 'idle', text: '' })
+                    }}
                     placeholder="sk-..."
                     autoComplete="off"
                   />
@@ -510,15 +577,101 @@ function App() {
               </label>
               <label>
                 <span>模型名称</span>
-                <input
-                  value={aiDraft.model}
-                  onChange={(event) =>
-                    setAiDraft((current) => ({ ...current, model: event.target.value }))
-                  }
-                  placeholder="gpt-4.1-mini"
-                  autoComplete="off"
-                />
+                <div className="model-field">
+                  <input
+                    value={aiDraft.model}
+                    onChange={(event) =>
+                      setAiDraft((current) => ({ ...current, model: event.target.value }))
+                    }
+                    placeholder="gpt-4.1-mini"
+                    autoComplete="off"
+                    role="combobox"
+                    aria-autocomplete="list"
+                    aria-expanded={modelMenuOpen}
+                    aria-controls="ai-model-options"
+                    onKeyDown={(event) => {
+                      if (event.key === 'ArrowDown' && modelOptions.length > 0) {
+                        event.preventDefault()
+                        setModelMenuOpen(true)
+                      } else if (event.key === 'Escape' && modelMenuOpen) {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        setModelMenuOpen(false)
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setModelMenuOpen((open) => !open)}
+                    disabled={modelOptions.length === 0}
+                    aria-label="选择模型"
+                    title="选择模型"
+                  >
+                    <ChevronDown size={17} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void discoverModels()}
+                    disabled={modelStatus.kind === 'loading'}
+                    aria-label="获取模型列表"
+                    title="获取模型列表"
+                  >
+                    {modelStatus.kind === 'loading' ? (
+                      <LoaderCircle className="is-spinning" size={17} />
+                    ) : (
+                      <RefreshCw size={17} />
+                    )}
+                  </button>
+                  {modelMenuOpen && modelOptions.length > 0 && (
+                    <div className="model-options" id="ai-model-options" role="listbox">
+                      {modelOptions.map((model) => (
+                        <button
+                          key={model}
+                          type="button"
+                          role="option"
+                          aria-selected={model === aiDraft.model}
+                          className={model === aiDraft.model ? 'is-selected' : undefined}
+                          onClick={() => {
+                            setAiDraft((current) => ({ ...current, model }))
+                            setModelMenuOpen(false)
+                          }}
+                        >
+                          {model}
+                          {model === aiDraft.model && <Check size={15} />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {modelStatus.text && (
+                  <small className={`model-status is-${modelStatus.kind}`} role="status">
+                    {modelStatus.text}
+                  </small>
+                )}
               </label>
+              <fieldset className="reasoning-field">
+                <legend>思考强度</legend>
+                <div className="reasoning-options">
+                  {reasoningOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={
+                        aiDraft.reasoningEffort === option.value ? 'is-selected' : undefined
+                      }
+                      aria-pressed={aiDraft.reasoningEffort === option.value}
+                      onClick={() =>
+                        setAiDraft((current) => ({
+                          ...current,
+                          reasoningEffort: option.value,
+                        }))
+                      }
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
             </div>
 
             <p className="settings-note">API Key 仅保存在当前浏览器，并通过本站代理转发。</p>

@@ -668,6 +668,41 @@ describe('streamForProvider: openai-compatible', () => {
     )
   })
 
+  it('sends the selected reasoning effort for custom models', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        okResponse(
+          sseStream([
+            'data: {"choices":[{"delta":{"content":"ok"}}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+            'data: [DONE]',
+          ]),
+        ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    const { cb } = collector()
+    await streamForProvider(
+      'custom',
+      {
+        apiKey: 'k',
+        model: 'reasoning-model',
+        baseUrl: 'https://my-endpoint.example.com/v1',
+        reasoningEffort: 'medium',
+      },
+      'sys',
+      [],
+      [],
+      4096,
+      cb,
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string) as Record<string, unknown>
+    expect(body.reasoning_effort).toBe('medium')
+    expect(body.max_completion_tokens).toBe(4096)
+    expect(body.max_tokens).toBeUndefined()
+    expect(body.temperature).toBeUndefined()
+  })
+
   it('rejects the custom provider without a base URL, without ever calling fetch', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)

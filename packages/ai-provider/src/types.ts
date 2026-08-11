@@ -2,6 +2,8 @@ import type { AgentMessage, AgentToolCall, AgentToolDef } from '@genoffice/agent
 
 export type AiProviderId = 'genspark' | 'anthropic' | 'gemini' | 'deepseek' | 'openai' | 'custom'
 
+export type AiReasoningEffort = 'default' | 'low' | 'medium' | 'high'
+
 /** Genspark account status (gsk login state; the sole auth source for AI features) */
 export interface GenSparkAccountStatus {
   loggedIn: boolean
@@ -13,6 +15,8 @@ export interface AiProviderConfig {
   model: string
   /** only used by the custom (OpenAI-compatible) provider */
   baseUrl?: string | undefined
+  /** OpenAI-compatible reasoning effort; default omits the provider parameter */
+  reasoningEffort?: AiReasoningEffort | undefined
 }
 
 export interface AiProviderMeta {

@@ -719,6 +719,10 @@ async function openAiCompatibleTurn(
     wd.touch()
     cb.onActivity?.()
   }
+  const reasoningEffort =
+    config.reasoningEffort && config.reasoningEffort !== 'default'
+      ? config.reasoningEffort
+      : undefined
   const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     signal: wd.signal,
@@ -729,7 +733,9 @@ async function openAiCompatibleTurn(
     },
     body: JSON.stringify({
       model: config.model,
-      max_tokens: maxTokens,
+      ...(reasoningEffort
+        ? { reasoning_effort: reasoningEffort, max_completion_tokens: maxTokens }
+        : { max_tokens: maxTokens, temperature: 0.3 }),
       messages: openAiMessages(system, messages),
       ...(tools.length > 0
         ? {
@@ -739,7 +745,6 @@ async function openAiCompatibleTurn(
             })),
           }
         : {}),
-      temperature: 0.3,
       stream: true,
     }),
   })

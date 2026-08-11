@@ -93,6 +93,29 @@ describe('chatForProvider', () => {
     )
   })
 
+  it('custom: sends reasoning effort with reasoning-model token settings', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ choices: [{ message: { content: 'ok' } }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    await chatForProvider(
+      'custom',
+      {
+        apiKey: 'k',
+        model: 'reasoning-model',
+        baseUrl: 'https://my-endpoint.example.com/v1',
+        reasoningEffort: 'high',
+      },
+      'sys',
+      'hi',
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string) as Record<string, unknown>
+    expect(body.reasoning_effort).toBe('high')
+    expect(body.max_completion_tokens).toBe(8192)
+    expect(body.max_tokens).toBeUndefined()
+    expect(body.temperature).toBeUndefined()
+  })
+
   it('custom: rejects without a base URL, without calling fetch', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)

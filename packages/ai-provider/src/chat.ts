@@ -88,6 +88,10 @@ async function chatOpenAiCompatible(
   system: string,
   user: string,
 ): Promise<AiChatResponse> {
+  const reasoningEffort =
+    config.reasoningEffort && config.reasoningEffort !== 'default'
+      ? config.reasoningEffort
+      : undefined
   const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     signal: wd.signal,
@@ -98,11 +102,13 @@ async function chatOpenAiCompatible(
     },
     body: JSON.stringify({
       model: config.model,
+      ...(reasoningEffort
+        ? { reasoning_effort: reasoningEffort, max_completion_tokens: 8192 }
+        : { max_tokens: 8192, temperature: 0.3 }),
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
       ],
-      temperature: 0.3,
     }),
   })
   wd.touch()

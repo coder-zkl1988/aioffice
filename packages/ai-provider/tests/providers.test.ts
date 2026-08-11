@@ -58,8 +58,29 @@ describe('resolveAiSettings', () => {
       defaults,
     )
     expect(resolved.provider).toBe('gemini')
-    expect(resolved.providers.gemini).toEqual({ apiKey: 'stored-gemini-key', model: 'gemini-2.5-pro' })
+    expect(resolved.providers.gemini).toEqual({
+      apiKey: 'stored-gemini-key',
+      model: 'gemini-2.5-pro',
+    })
     // provider not mentioned in stored.providers keeps the computed default
     expect(resolved.providers.anthropic.apiKey).toBe('preset-key')
+  })
+
+  it('preserves a custom reasoning effort', () => {
+    const resolved = resolveAiSettings(
+      {
+        provider: 'custom',
+        providers: {
+          custom: {
+            apiKey: 'stored-key',
+            model: 'reasoning-model',
+            baseUrl: 'https://ai.example.com/v1',
+            reasoningEffort: 'high',
+          },
+        } as never,
+      },
+      defaultAiSettings(),
+    )
+    expect(resolved.providers.custom.reasoningEffort).toBe('high')
   })
 })

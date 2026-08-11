@@ -4,6 +4,7 @@ export type {
   AiProviderConfig,
   AiProviderId,
   AiProviderMeta,
+  AiReasoningEffort,
   AiSettings,
   AiStreamChunk,
   AiStreamRequest,
