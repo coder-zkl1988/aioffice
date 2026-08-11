@@ -141,6 +141,12 @@ export function getWebAiSettings(): AiSettings {
   }
 }
 
+export function hasConfiguredWebAi(settings: AiSettings = getWebAiSettings()): boolean {
+  if (settings.provider !== 'custom') return false
+  const config = settings.providers.custom
+  return Boolean(config.apiKey.trim() && config.model.trim() && config.baseUrl?.trim())
+}
+
 export function saveWebAiSettings(settings: AiSettings): void {
   localStorage.setItem(AI_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
 }

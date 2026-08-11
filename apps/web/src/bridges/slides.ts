@@ -13,8 +13,10 @@ import { createWebAttachments } from '../lib/attachments'
 import {
   cancelWebAiStream,
   getWebAiSettings,
+  hasConfiguredWebAi,
   onWebAiStream,
   saveWebAiSettings,
+  webAiChat,
   webAiStream,
   webAnalyzeMedia,
   webFetchImage,
@@ -22,6 +24,11 @@ import {
   webImageSearch,
   webSearch,
 } from '../lib/ai'
+import {
+  buildWebSlideHtmlPrompts,
+  sanitizeGeneratedSlideHtml,
+  type WebSlideHtmlRequest,
+} from '../lib/slide-html'
 import {
   consumePendingPath,
   getFileHandle,
@@ -476,6 +483,28 @@ async function htmlToPptx(
   }
 }
 
+async function generateWebSlidePage(
+  request: WebSlideHtmlRequest,
+): Promise<{ ok: boolean; marker?: string; error?: string }> {
+  const settings = getWebAiSettings()
+  if (!hasConfiguredWebAi(settings)) {
+    return { ok: false, error: '请先在工作台设置中配置自定义 AI 模型' }
+  }
+  const prompts = buildWebSlideHtmlPrompts(request)
+  const result = await webAiChat({ settings, ...prompts })
+  if (!result.ok || !result.content) {
+    return { ok: false, error: result.error || '模型未返回幻灯片内容' }
+  }
+  try {
+    return {
+      ok: true,
+      marker: sanitizeGeneratedSlideHtml(result.content, request),
+    }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 function menuCommands(callback: Parameters<SlidesApi['onMenuCommand']>[0]): () => void {
   const listener = (event: KeyboardEvent) => {
     if (!(event.metaKey || event.ctrlKey)) return
@@ -549,18 +578,18 @@ const localApi: Partial<SlidesApi> = {
   aiStream: webAiStream,
   aiStreamCancel: cancelWebAiStream,
   onAiStream: onWebAiStream,
-  aiGskStatus: async () => ({ loggedIn: false }),
+  aiGskStatus: async () => ({ loggedIn: hasConfiguredWebAi() }),
   aiGskLogin: async () => {
     window.open('https://www.genspark.ai/', '_blank', 'noopener,noreferrer')
   },
-  gskStatus: async () => ({ available: false }),
+  gskStatus: async () => ({ available: hasConfiguredWebAi() }),
   webSearch,
   imageSearch: webImageSearch,
   generateImage: webGenerateImage,
   analyzeMedia: webAnalyzeMedia,
   htmlToPptx,
-  cloudGenStatus: async () => ({ enabled: false }),
-  cloudGeneratePage: async () => ({ ok: false, error: '云端单页生成未启用' }),
+  cloudGenStatus: async () => ({ enabled: hasConfiguredWebAi() }),
+  cloudGeneratePage: generateWebSlidePage,
   clipboardExternal: async () => {
     try {
       if (navigator.clipboard.read) {

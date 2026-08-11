@@ -7,6 +7,7 @@ import type {
 import {
   cancelWebAiStream,
   getWebAiSettings,
+  hasConfiguredWebAi,
   onWebAiStream,
   saveWebAiSettings,
   webAiChat,
@@ -232,7 +233,7 @@ const desktopApi: DesktopApi = {
   aiChat: webAiChat,
   aiStream: webAiStream,
   aiStreamCancel: cancelWebAiStream,
-  aiGskStatus: async () => ({ loggedIn: false }),
+  aiGskStatus: async () => ({ loggedIn: hasConfiguredWebAi() }),
   aiGskLogin: async () => {
     window.open('https://www.genspark.ai/', '_blank', 'noopener,noreferrer')
   },
