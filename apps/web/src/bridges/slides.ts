@@ -25,10 +25,13 @@ import {
   webSearch,
 } from '../lib/ai'
 import {
-  buildWebSlideHtmlPrompts,
-  sanitizeGeneratedSlideHtml,
-  type WebSlideHtmlRequest,
-} from '../lib/slide-html'
+  buildWebSlideSpecPrompts,
+  createSlideSpecMarker,
+  parseGeneratedSlideSpec,
+  parseSlideSpecMarker,
+  type WebSlideSpecRequest,
+} from '../lib/slide-spec'
+import { compileNativeSlides } from '../lib/slide-pptx'
 import {
   consumePendingPath,
   getFileHandle,
@@ -443,28 +446,42 @@ async function htmlToPptx(
   mode: 'replace' | 'append' | 'replace_at' | 'insert_at' = 'replace',
   atIndex?: number,
   deckName = 'Generated.pptx',
-): Promise<OpenResult | { error: string }> {
+): Promise<(OpenResult & { imageFailures?: { page: number; url: string }[] }) | { error: string }> {
   if (pagesHtml.length === 0 || pagesHtml.length > 100) return { error: '生成页数无效' }
   try {
     if (!sessionId) await newBlank(fitWidthPx)
-    const width = 1280
-    const height = 720
-    const images = await Promise.all(pagesHtml.map((html) => renderHtmlPage(html, width, height)))
-    const presentation = new PptxGenJS()
-    presentation.layout = 'LAYOUT_WIDE'
-    presentation.author = 'GenOffice Web'
-    presentation.subject = deckName
-    for (const data of images) {
-      presentation.addSlide().addImage({ data, x: 0, y: 0, w: 13.333333, h: 7.5 })
+    const specs = pagesHtml.map(parseSlideSpecMarker)
+    let bytes: ArrayBuffer
+    let imageFailures: { page: number; url: string }[] = []
+    if (specs.every((spec) => spec !== null)) {
+      const generated = await compileNativeSlides(specs, webFetchImage)
+      bytes = generated.bytes
+      imageFailures = generated.imageFailures
+    } else {
+      if (specs.some((spec) => spec !== null)) {
+        throw new Error('不能混合原生幻灯片规范和旧版 HTML 页面')
+      }
+      const width = 1280
+      const height = 720
+      const images = await Promise.all(pagesHtml.map((html) => renderHtmlPage(html, width, height)))
+      const presentation = new PptxGenJS()
+      presentation.layout = 'LAYOUT_WIDE'
+      presentation.author = 'GenOffice Web'
+      presentation.subject = deckName
+      for (const data of images) {
+        presentation.addSlide().addImage({ data, x: 0, y: 0, w: 13.333333, h: 7.5 })
+      }
+      const output = await presentation.write({ outputType: 'arraybuffer', compression: true })
+      bytes =
+        output instanceof ArrayBuffer
+          ? output
+          : output instanceof Uint8Array
+            ? Uint8Array.from(output).buffer
+            : await (output as Blob).arrayBuffer()
     }
-    const output = await presentation.write({ outputType: 'arraybuffer', compression: true })
-    const bytes =
-      output instanceof ArrayBuffer
-        ? output
-        : output instanceof Uint8Array
-          ? Uint8Array.from(output).buffer
-          : await (output as Blob).arrayBuffer()
-    const result = await remoteCall<OpenResult>('importGenerated', [
+    const result = await remoteCall<
+      OpenResult & { appendedFrom?: number; replacedIndex?: number; insertedIndex?: number }
+    >('importGenerated', [
       {
         pptxBase64: base64FromBytes(bytes),
         fitWidthPx,
@@ -477,20 +494,36 @@ async function htmlToPptx(
       path: result.path,
       name: deckName.toLowerCase().endsWith('.pptx') ? deckName : `${deckName}.pptx`,
     }
-    return result
+    const imagePageOffset =
+      mode === 'append'
+        ? (result.appendedFrom ?? 0)
+        : mode === 'replace_at'
+          ? (result.replacedIndex ?? atIndex ?? 0)
+          : mode === 'insert_at'
+            ? (result.insertedIndex ?? atIndex ?? 0)
+            : 0
+    return imageFailures.length
+      ? {
+          ...result,
+          imageFailures: imageFailures.map((failure) => ({
+            ...failure,
+            page: failure.page + imagePageOffset,
+          })),
+        }
+      : result
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) }
   }
 }
 
 async function generateWebSlidePage(
-  request: WebSlideHtmlRequest,
+  request: WebSlideSpecRequest,
 ): Promise<{ ok: boolean; marker?: string; error?: string }> {
   const settings = getWebAiSettings()
   if (!hasConfiguredWebAi(settings)) {
     return { ok: false, error: '请先在工作台设置中配置自定义 AI 模型' }
   }
-  const prompts = buildWebSlideHtmlPrompts(request)
+  const prompts = buildWebSlideSpecPrompts(request)
   const result = await webAiChat({ settings, ...prompts })
   if (!result.ok || !result.content) {
     return { ok: false, error: result.error || '模型未返回幻灯片内容' }
@@ -498,7 +531,7 @@ async function generateWebSlidePage(
   try {
     return {
       ok: true,
-      marker: sanitizeGeneratedSlideHtml(result.content, request),
+      marker: createSlideSpecMarker(parseGeneratedSlideSpec(result.content, request)),
     }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }

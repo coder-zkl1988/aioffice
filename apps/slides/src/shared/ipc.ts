@@ -1038,9 +1038,9 @@ export interface SlidesApi {
       })
     | { error: string }
   >
-  /** Whether cloud single-page generation (gsk slide_generate) is available (GENOFFICE_CLOUD_SLIDE=1 + gsk login) */
+  /** Whether AI single-page generation is available in the current environment */
   cloudGenStatus: () => Promise<{ enabled: boolean }>
-  /** Cloud single-page generation: brief → one-slide pptx temp file; the marker goes into an htmlToPptx pagesHtml slot in place of HTML */
+  /** AI single-page generation: brief → a native editable page marker consumed by htmlToPptx */
   cloudGeneratePage: (op: {
     brief: string
     title?: string

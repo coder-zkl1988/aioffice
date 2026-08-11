@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import PptxGenJS from 'pptxgenjs'
 import { describe, expect, it } from 'vitest'
+import { compileNativeSlides } from '../src/lib/slide-pptx'
+import { parseGeneratedSlideSpec } from '../src/lib/slide-spec'
 import { SlidesWebService } from './slides'
 
 const fixture = fileURLToPath(
@@ -200,6 +202,96 @@ describe('SlidesWebService', () => {
       paragraphs: [{ runs: [{ text: 'GROUP_CHILD_EDITED' }] }],
     })
     expect(JSON.stringify(edited)).toContain('GROUP_CHILD_EDITED')
+  })
+
+  it('imports locally generated PPTX as editable native elements', async () => {
+    const spec = parseGeneratedSlideSpec(
+      JSON.stringify({
+        version: 1,
+        title: 'Native elements stay editable',
+        layout: 'data_chart',
+        background: '#FFFFFF',
+        elements: [
+          {
+            kind: 'shape',
+            shape: 'roundRect',
+            x: 64,
+            y: 150,
+            w: 440,
+            h: 460,
+            fill: '#F2F5FA',
+            z: 1,
+          },
+          {
+            kind: 'text',
+            text: 'LOCAL_EDITABLE_TEXT',
+            x: 64,
+            y: 54,
+            w: 800,
+            h: 70,
+            fontSize: 42,
+            color: '#171717',
+            bold: true,
+            z: 10,
+          },
+          {
+            kind: 'table',
+            x: 92,
+            y: 210,
+            w: 380,
+            h: 280,
+            rows: [
+              ['Metric', 'Value'],
+              ['Adoption', '82%'],
+            ],
+            headerRows: 1,
+            z: 5,
+          },
+          {
+            kind: 'chart',
+            chart: 'bar',
+            title: 'Quarterly growth',
+            categories: ['Q1', 'Q2', 'Q3'],
+            series: [{ name: 'Revenue', values: [12, 18, 27] }],
+            x: 560,
+            y: 170,
+            w: 640,
+            h: 430,
+            z: 5,
+          },
+        ],
+      }),
+      { brief: 'Verify native editability.' },
+    )
+    const generated = await compileNativeSlides([spec], async () => null)
+    const service = new SlidesWebService()
+    const opened = await service.open({
+      name: 'native-generated.pptx',
+      fitWidthPx: 1280,
+      pptxBase64: Buffer.from(generated.bytes).toString('base64'),
+    })
+
+    const slide = opened.result.slides[0]!
+    expect(slide.nodes.length).toBeGreaterThanOrEqual(4)
+    expect(JSON.stringify(slide)).toContain('LOCAL_EDITABLE_TEXT')
+    expect(JSON.stringify(slide)).toContain('Quarterly growth')
+    const textNode = slide.nodes.find((node) =>
+      JSON.stringify(node).includes('LOCAL_EDITABLE_TEXT'),
+    )
+    expect(textNode?.sourceId).toBeTruthy()
+
+    const edited = await service.call({
+      sessionId: opened.sessionId,
+      action: 'editText',
+      args: [
+        {
+          slideIndex: 0,
+          sourceId: textNode!.sourceId,
+          paragraphs: [{ runs: [{ text: 'EDITED_AFTER_IMPORT' }] }],
+        },
+      ],
+    })
+    expect(JSON.stringify(edited)).toContain('EDITED_AFTER_IMPORT')
   })
 
   it('collapses history batches, restores AI snapshots, and repastes in place', async () => {

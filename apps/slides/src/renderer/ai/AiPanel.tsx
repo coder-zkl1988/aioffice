@@ -924,8 +924,8 @@ export function AiPanel({
           return false
         }
       },
-      // Cloud single-page generation (gsk slide_generate): the cloud service owns HTML writing +
-      // pptx conversion; the deck-level style/outline stay local.
+      // Single-page generation returns a marker. Web compiles it into native editable PPTX
+      // elements; desktop implementations may provide their own compatible generator.
       generatePageCloud: async (args) => {
         try {
           const briefParts = [args.brief]
