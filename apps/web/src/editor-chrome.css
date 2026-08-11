@@ -32,20 +32,3 @@
   background: var(--hover, #f3f2f1);
   color: var(--text, #242424);
 }
-
-.web-editor-back ~ #root {
-  width: calc(100% - 40px);
-  margin-left: 40px;
-}
-
-@media (max-width: 640px) {
-  .web-editor-back {
-    top: auto;
-    bottom: 8px;
-  }
-
-  .web-editor-back ~ #root {
-    width: 100%;
-    margin-left: 0;
-  }
-}
