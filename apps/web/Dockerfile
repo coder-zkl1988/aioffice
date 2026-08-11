@@ -3,7 +3,7 @@ ARG ALPINE_MIRROR
 FROM rust:alpine AS xlsx-sidecar-builder
 
 ARG ALPINE_MIRROR
-ARG CARGO_REGISTRIES_CRATES_IO_INDEX
+ARG CARGO_REGISTRY
 
 RUN if [ -n "$ALPINE_MIRROR" ]; then \
       sed -i "s#dl-cdn.alpinelinux.org#$ALPINE_MIRROR#g" /etc/apk/repositories; \
@@ -13,8 +13,10 @@ RUN if [ -n "$ALPINE_MIRROR" ]; then \
 WORKDIR /build
 COPY apps/sheets/native/xlsx-engine/Cargo.toml apps/sheets/native/xlsx-engine/Cargo.lock ./
 COPY apps/sheets/native/xlsx-engine/src ./src
-RUN if [ -n "$CARGO_REGISTRIES_CRATES_IO_INDEX" ]; then \
-      export CARGO_REGISTRIES_CRATES_IO_INDEX="$CARGO_REGISTRIES_CRATES_IO_INDEX"; \
+RUN if [ -n "$CARGO_REGISTRY" ]; then \
+      mkdir -p /root/.cargo; \
+      printf '[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
+        "$CARGO_REGISTRY" > /root/.cargo/config.toml; \
     fi \
  && cargo build --release --locked
 
