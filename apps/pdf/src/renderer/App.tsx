@@ -63,12 +63,7 @@ import { OutlinePanel } from './OutlinePanel'
 import type { OutlineNode } from './OutlinePanel'
 import { printPdf } from './print'
 import { PropertiesDialog } from './PropertiesDialog'
-import {
-  PdfToolsDialog,
-  pdfToolLabel,
-  pdfToolSuccessText,
-  pdfToolsTabLabel,
-} from './PdfToolsDialog'
+import { PdfToolsDialog, pdfToolLabel, pdfToolSuccessText } from './PdfToolsDialog'
 import type { PdfBulkTextReplacementRequest, PdfToolKind } from './PdfToolsDialog'
 import { SignatureDialog, fileToCanvas } from './SignatureDialog'
 import type { SignatureData } from './SignatureDialog'
@@ -94,7 +89,7 @@ import {
   runsToColors,
   spliceCharColors,
 } from './color-runs'
-import { platformShortcuts } from '@genoffice/i18n'
+import { platformShortcuts, type Lang } from '@genoffice/i18n'
 import {
   pdfaPreservationReportBytes,
   pdfEncryptionInfoBytes,
@@ -601,6 +596,12 @@ const IconOutline = () => (
     <circle cx="8.79" cy="18.32" r="0.9" fill="currentColor" stroke="none" />
   </Icon>
 )
+const IconSidebarCollapse = () => (
+  <Icon size={18}>
+    <rect x="3.5" y="4" width="17" height="16" rx="1.5" />
+    <path d="M15 4 V20 M9 9 L12 12 L9 15" />
+  </Icon>
+)
 const IconDrawColor = () => (
   <Icon>
     <path d="M12 4.5 C14.2 7.3 17.25 9.2 17.25 12.4 C17.25 15.4 14.9 17.5 12 17.5 C9.1 17.5 6.75 15.4 6.75 12.4 C6.75 9.2 9.8 7.3 12 4.5 Z" />
@@ -800,6 +801,176 @@ const DRAW_TOOLS = [
   { tool: 'note' as const, icon: IconNote, key: 'drawNote' as const },
 ]
 
+type PdfToolRibbonTab =
+  'tools' | 'convertTools' | 'organizeTools' | 'processTools' | 'protectTools' | 'inspectTools'
+
+type PdfToolRibbonIcon = () => ReactElement
+type PdfToolRibbonGroup = readonly (readonly [PdfToolKind, PdfToolRibbonIcon])[]
+
+const PDF_TOOL_RIBBON_GROUPS: Record<PdfToolRibbonTab, readonly PdfToolRibbonGroup[]> = {
+  tools: [
+    [
+      ['split', IconExtract],
+      ['merge', IconInsertPdf],
+      ['compare', IconSpread],
+      ['compress', IconProps],
+      ['ocr', IconExtract],
+      ['password', IconLock],
+      ['info', IconProps],
+    ],
+  ],
+  convertTools: [
+    [
+      ['imagesToPdf', IconExportImg],
+      ['cbzToPdf', IconInsertPdf],
+      ['emailToPdf', IconInsertPdf],
+      ['epubToPdf', IconInsertPdf],
+      ['htmlToPdf', IconInsertPdf],
+      ['markdownToPdf', IconInsertPdf],
+      ['jsonToPdf', IconExportImg],
+    ],
+    [
+      ['pdfToImages', IconExportImg],
+      ['pdfToVideo', IconExportImg],
+      ['pdfToCbz', IconExportImg],
+      ['pdfToHtml', IconExportImg],
+      ['pdfToEpub', IconExportImg],
+      ['pdfToPptx', IconExportImg],
+      ['pdfToDocx', IconExportImg],
+      ['pdfToOdt', IconExportImg],
+      ['pdfToRtf', IconExportImg],
+      ['pdfToPdfa', IconProps],
+      ['pdfToMarkdown', IconExportImg],
+      ['pdfToXlsx', IconExportImg],
+      ['pdfToXml', IconExportImg],
+      ['pdfToJson', IconExtract],
+    ],
+  ],
+  organizeTools: [
+    [
+      ['split', IconExtract],
+      ['merge', IconInsertPdf],
+      ['extractPages', IconExtract],
+      ['splitSections', IconThumbs],
+      ['autoSplit', IconExtract],
+      ['filterPages', IconExtract],
+      ['removePages', IconDeletePage],
+      ['removeBlanks', IconDeletePage],
+      ['rearrange', IconThumbs],
+    ],
+    [
+      ['crop', IconRect],
+      ['scale', IconFitPage],
+      ['nup', IconSpread],
+      ['booklet', IconSpread],
+      ['poster', IconThumbs],
+      ['singlePage', IconSinglePage],
+      ['rotatePages', IconRotateR],
+      ['autoRotate', IconRotateR],
+      ['deskew', IconRotateR],
+      ['pageNumbers', IconProps],
+      ['scannerImageSplit', IconThumbs],
+    ],
+  ],
+  processTools: [
+    [
+      ['bulkReplaceText', IconEditText],
+      ['extractText', IconExtract],
+      ['extractTables', IconExtract],
+      ['extractImages', IconExportImg],
+      ['removeImages', IconRect],
+      ['removeAnnotations', IconHighlight],
+      ['comments', IconHighlight],
+      ['forms', IconRect],
+      ['attachments', IconInsertPdf],
+      ['bookmarks', IconProps],
+      ['metadata', IconProps],
+      ['autoRename', IconProps],
+    ],
+    [
+      ['scannerEffect', IconEditImage],
+      ['invertColors', IconNight],
+      ['replaceColors', IconDrawColor],
+      ['adjustColors', IconEditImage],
+      ['overlay', IconSpread],
+      ['overlayImage', IconEditImage],
+      ['flatten', IconSinglePage],
+      ['compress', IconProps],
+      ['ocr', IconExtract],
+    ],
+  ],
+  protectTools: [
+    [
+      ['password', IconLock],
+      ['certificateSign', IconProps],
+      ['timestamp', IconProps],
+      ['removeSignatures', IconHighlight],
+      ['redact', IconHighlight],
+      ['sanitize', IconProps],
+    ],
+    [
+      ['signatureAudit', IconProps],
+      ['javascriptAudit', IconProps],
+      ['securityInfo', IconLock],
+    ],
+  ],
+  inspectTools: [
+    [
+      ['compare', IconSpread],
+      ['preflight', IconProps],
+      ['repair', IconProps],
+      ['decompress', IconProps],
+      ['pipeline', IconProps],
+      ['filterDocuments', IconExtract],
+    ],
+    [
+      ['info', IconProps],
+      ['fontInfo', IconProps],
+      ['annotationInfo', IconHighlight],
+      ['securityInfo', IconLock],
+      ['signatureAudit', IconProps],
+      ['javascriptAudit', IconProps],
+    ],
+  ],
+}
+
+const PDF_TOOL_RIBBON_LABELS = {
+  en: {
+    tools: 'Tools',
+    convertTools: 'Convert',
+    organizeTools: 'Organize',
+    processTools: 'Process',
+    protectTools: 'Protect',
+    inspectTools: 'Inspect',
+  },
+  zh: {
+    tools: '工具',
+    convertTools: '格式转换',
+    organizeTools: '页面整理',
+    processTools: '内容处理',
+    protectTools: '安全合规',
+    inspectTools: '检查修复',
+  },
+  'zh-TW': {
+    tools: '工具',
+    convertTools: '格式轉換',
+    organizeTools: '頁面整理',
+    processTools: '內容處理',
+    protectTools: '安全合規',
+    inspectTools: '檢查修復',
+  },
+} as const
+
+function pdfToolRibbonLabel(tab: PdfToolRibbonTab, lang: Lang): string {
+  const labels =
+    lang === 'zh'
+      ? PDF_TOOL_RIBBON_LABELS.zh
+      : lang === 'zh-TW'
+        ? PDF_TOOL_RIBBON_LABELS['zh-TW']
+        : PDF_TOOL_RIBBON_LABELS.en
+  return labels[tab]
+}
+
 // ── ribbon tabs (docs-style tab strip over a fixed 80px band) ──
 const RIBBON_TABS = [
   { id: 'home', labelKey: 'ribbonTabHome' },
@@ -808,8 +979,17 @@ const RIBBON_TABS = [
   { id: 'page', labelKey: 'ribbonTabPage' },
   { id: 'view', labelKey: 'ribbonTabView' },
   { id: 'tools', labelKey: null },
+  { id: 'convertTools', labelKey: null },
+  { id: 'organizeTools', labelKey: null },
+  { id: 'processTools', labelKey: null },
+  { id: 'protectTools', labelKey: null },
+  { id: 'inspectTools', labelKey: null },
 ] as const
 type RibbonTab = (typeof RIBBON_TABS)[number]['id']
+
+function isPdfToolRibbonTab(tab: RibbonTab): tab is PdfToolRibbonTab {
+  return tab in PDF_TOOL_RIBBON_GROUPS
+}
 
 /** One-click AI feature glyphs (same 24-canvas/1.5-stroke artwork as the docs ribbon) */
 const IconAiSummarize = () => (
@@ -1120,6 +1300,8 @@ function SignDropOverlay({
 
 export default function App() {
   const { lang, t } = useI18n()
+  const collapseSidebarLabel =
+    lang === 'zh' ? '收起侧边栏' : lang === 'zh-TW' ? '收起側邊欄' : 'Collapse sidebar'
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null)
   const [filePath, setFilePath] = useState('')
   const [status, setStatus] = useState<'loading' | 'error' | 'empty' | 'password' | 'ready'>(
@@ -1140,7 +1322,7 @@ export default function App() {
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
-  /** Drag to resize: width follows the pointer (rAF-throttled); persisted on release */
+  /** Drag the left edge of the right sidebar (rAF-throttled); persisted on release */
   const startSidebarResize = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault()
     const startX = e.clientX
@@ -1150,7 +1332,7 @@ export default function App() {
     let w = startW
     let raf = 0
     const onMove = (ev: PointerEvent) => {
-      w = clampSidebarW(startW + ev.clientX - startX)
+      w = clampSidebarW(startW + startX - ev.clientX)
       if (!raf)
         raf = requestAnimationFrame(() => {
           raf = 0
@@ -4781,7 +4963,7 @@ export default function App() {
               className={`ribbon-tab${ribbonTab === id ? ' active' : ''}`}
               onClick={() => setRibbonTab(id)}
             >
-              {labelKey ? t(labelKey) : pdfToolsTabLabel(lang)}
+              {labelKey ? t(labelKey) : isPdfToolRibbonTab(id) ? pdfToolRibbonLabel(id, lang) : ''}
             </button>
           ))}
           <span className="ribbon-tabs-spacer" />
@@ -5129,100 +5311,9 @@ export default function App() {
               {pageZoomGroup}
             </>
           )}
-          {ribbonTab === 'tools' && (
+          {isPdfToolRibbonTab(ribbonTab) && (
             <>
-              {(
-                [
-                  [
-                    ['split', IconExtract],
-                    ['merge', IconInsertPdf],
-                    ['compare', IconSpread],
-                    ['imagesToPdf', IconExportImg],
-                    ['cbzToPdf', IconInsertPdf],
-                    ['emailToPdf', IconInsertPdf],
-                    ['epubToPdf', IconInsertPdf],
-                    ['htmlToPdf', IconInsertPdf],
-                    ['markdownToPdf', IconInsertPdf],
-                    ['pdfToImages', IconExportImg],
-                    ['pdfToVideo', IconExportImg],
-                    ['pdfToCbz', IconExportImg],
-                    ['pdfToHtml', IconExportImg],
-                    ['pdfToEpub', IconExportImg],
-                    ['pdfToPptx', IconExportImg],
-                    ['pdfToDocx', IconExportImg],
-                    ['pdfToOdt', IconExportImg],
-                    ['pdfToRtf', IconExportImg],
-                    ['pdfToPdfa', IconProps],
-                    ['pdfToMarkdown', IconExportImg],
-                    ['pdfToXlsx', IconExportImg],
-                    ['pdfToXml', IconExportImg],
-                    ['extractPages', IconExtract],
-                    ['splitSections', IconThumbs],
-                    ['crop', IconRect],
-                    ['scale', IconFitPage],
-                    ['nup', IconSpread],
-                  ],
-                  [
-                    ['booklet', IconSpread],
-                    ['poster', IconThumbs],
-                    ['singlePage', IconSinglePage],
-                  ],
-                  [
-                    ['rotatePages', IconRotateR],
-                    ['autoRotate', IconRotateR],
-                    ['deskew', IconRotateR],
-                    ['autoRename', IconProps],
-                    ['pageNumbers', IconProps],
-                    ['scannerEffect', IconEditImage],
-                    ['scannerImageSplit', IconThumbs],
-                    ['autoSplit', IconExtract],
-                    ['removePages', IconDeletePage],
-                    ['removeImages', IconRect],
-                    ['bulkReplaceText', IconEditText],
-                    ['extractText', IconExtract],
-                    ['pdfToJson', IconExtract],
-                    ['jsonToPdf', IconExportImg],
-                    ['extractTables', IconExtract],
-                    ['extractImages', IconExportImg],
-                    ['removeAnnotations', IconHighlight],
-                    ['removeBlanks', IconDeletePage],
-                    ['invertColors', IconNight],
-                    ['replaceColors', IconDrawColor],
-                    ['adjustColors', IconEditImage],
-                    ['rearrange', IconThumbs],
-                  ],
-                  [
-                    ['redact', IconHighlight],
-                    ['comments', IconHighlight],
-                    ['compress', IconProps],
-                    ['flatten', IconSinglePage],
-                    ['forms', IconRect],
-                    ['repair', IconProps],
-                    ['decompress', IconProps],
-                    ['ocr', IconExtract],
-                    ['password', IconLock],
-                    ['certificateSign', IconProps],
-                    ['timestamp', IconProps],
-                    ['removeSignatures', IconHighlight],
-                    ['signatureAudit', IconProps],
-                    ['preflight', IconProps],
-                    ['javascriptAudit', IconProps],
-                    ['sanitize', IconProps],
-                    ['pipeline', IconProps],
-                    ['overlay', IconSpread],
-                    ['overlayImage', IconEditImage],
-                    ['filterPages', IconExtract],
-                    ['filterDocuments', IconExtract],
-                    ['attachments', IconInsertPdf],
-                    ['bookmarks', IconProps],
-                    ['metadata', IconProps],
-                    ['fontInfo', IconProps],
-                    ['annotationInfo', IconHighlight],
-                    ['securityInfo', IconLock],
-                    ['info', IconProps],
-                  ],
-                ] as const
-              ).map((tools, groupIndex) => (
+              {PDF_TOOL_RIBBON_GROUPS[ribbonTab].map((tools, groupIndex) => (
                 <Fragment key={tools[0][0]}>
                   {groupIndex > 0 && <div className="ribbon-sep" />}
                   <div className="ribbon-group">
@@ -5284,79 +5375,6 @@ export default function App() {
         </div>
         <div className="app-content">
           <div className="pdf-body">
-            {sidebar === 'outline' && outline && (
-              <div className="pdf-thumbs pdf-outline-pane" style={{ width: sidebarW }}>
-                <OutlinePanel outline={outline} onGoToDest={(dest) => void goToDest(dest)} />
-              </div>
-            )}
-            {sidebar === 'thumbs' && (
-              <div ref={thumbsRef} className="pdf-thumbs" style={{ width: sidebarW }}>
-                {visList.map((origIdx, v) => {
-                  const size = dispSize(origIdx)
-                  return (
-                    <div
-                      key={origIdx}
-                      ref={setThumbRef(v)}
-                      data-idx={v}
-                      tabIndex={-1}
-                      className={`pdf-thumb${currentPage === v + 1 ? ' pdf-thumb-active' : ''}${
-                        dragOver === v && dragFrom !== null && dragFrom !== v
-                          ? ' pdf-thumb-dropbefore'
-                          : ''
-                      }`}
-                      draggable={!readOnly}
-                      onDragStart={(e) => {
-                        e.dataTransfer.effectAllowed = 'move'
-                        setDragFrom(v)
-                      }}
-                      onDragOver={(e) => {
-                        if (dragFrom === null) return
-                        e.preventDefault()
-                        e.dataTransfer.dropEffect = 'move'
-                        setDragOver(v)
-                      }}
-                      onDragLeave={() => setDragOver((o) => (o === v ? null : o))}
-                      onDrop={(e) => {
-                        e.preventDefault()
-                        if (dragFrom !== null) movePage(dragFrom, v)
-                        setDragFrom(null)
-                        setDragOver(null)
-                      }}
-                      onDragEnd={() => {
-                        setDragFrom(null)
-                        setDragOver(null)
-                      }}
-                      onClick={() => scrollToPage(v + 1)}
-                      onContextMenu={(e) => {
-                        e.preventDefault()
-                        setThumbMenu({
-                          x: Math.min(e.clientX, window.innerWidth - 190),
-                          y: Math.min(e.clientY, window.innerHeight - 280),
-                          origIdx,
-                        })
-                      }}
-                    >
-                      <div
-                        className="pdf-thumb-box"
-                        style={{ aspectRatio: `${size.width} / ${size.height}` }}
-                      >
-                        <PdfThumb
-                          doc={doc}
-                          pageNo={origIdx + 1}
-                          rotationDelta={rotDelta(origIdx)}
-                          visible={visibleThumbs.has(v)}
-                          rasterW={thumbRasterW}
-                        />
-                      </div>
-                      <span className="pdf-thumb-no">{v + 1}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-            {(sidebar === 'thumbs' || (sidebar === 'outline' && !!outline)) && (
-              <div className="pdf-side-resizer" onPointerDown={startSidebarResize} />
-            )}
             <div
               ref={scrollRef}
               className={`pdf-scroll${drawTool ? ' pdf-drawing' : ''}${nightMode ? ' pdf-night' : ''}`}
@@ -6180,6 +6198,112 @@ export default function App() {
                 </div>
               ))}
             </div>
+            {(sidebar === 'thumbs' || (sidebar === 'outline' && !!outline)) && (
+              <div className="pdf-side-resizer" onPointerDown={startSidebarResize} />
+            )}
+            {sidebar === 'outline' && outline && (
+              <aside className="pdf-thumbs" style={{ width: sidebarW }} aria-label={t('outline')}>
+                <div className="pdf-sidebar-header">
+                  <span>{t('outline')}</span>
+                  <button
+                    className="pdf-sidebar-collapse"
+                    type="button"
+                    data-tip={collapseSidebarLabel}
+                    aria-label={collapseSidebarLabel}
+                    onClick={() => setSidebar(null)}
+                  >
+                    <IconSidebarCollapse />
+                  </button>
+                </div>
+                <div className="pdf-outline-pane">
+                  <OutlinePanel outline={outline} onGoToDest={(dest) => void goToDest(dest)} />
+                </div>
+              </aside>
+            )}
+            {sidebar === 'thumbs' && (
+              <aside
+                ref={thumbsRef}
+                className="pdf-thumbs"
+                style={{ width: sidebarW }}
+                aria-label={t('thumbs')}
+              >
+                <div className="pdf-sidebar-header">
+                  <span>{t('thumbs')}</span>
+                  <button
+                    className="pdf-sidebar-collapse"
+                    type="button"
+                    data-tip={collapseSidebarLabel}
+                    aria-label={collapseSidebarLabel}
+                    onClick={() => setSidebar(null)}
+                  >
+                    <IconSidebarCollapse />
+                  </button>
+                </div>
+                <div className="pdf-thumbs-list">
+                  {visList.map((origIdx, v) => {
+                    const size = dispSize(origIdx)
+                    return (
+                      <div
+                        key={origIdx}
+                        ref={setThumbRef(v)}
+                        data-idx={v}
+                        tabIndex={-1}
+                        className={`pdf-thumb${currentPage === v + 1 ? ' pdf-thumb-active' : ''}${
+                          dragOver === v && dragFrom !== null && dragFrom !== v
+                            ? ' pdf-thumb-dropbefore'
+                            : ''
+                        }`}
+                        draggable={!readOnly}
+                        onDragStart={(e) => {
+                          e.dataTransfer.effectAllowed = 'move'
+                          setDragFrom(v)
+                        }}
+                        onDragOver={(e) => {
+                          if (dragFrom === null) return
+                          e.preventDefault()
+                          e.dataTransfer.dropEffect = 'move'
+                          setDragOver(v)
+                        }}
+                        onDragLeave={() => setDragOver((o) => (o === v ? null : o))}
+                        onDrop={(e) => {
+                          e.preventDefault()
+                          if (dragFrom !== null) movePage(dragFrom, v)
+                          setDragFrom(null)
+                          setDragOver(null)
+                        }}
+                        onDragEnd={() => {
+                          setDragFrom(null)
+                          setDragOver(null)
+                        }}
+                        onClick={() => scrollToPage(v + 1)}
+                        onContextMenu={(e) => {
+                          e.preventDefault()
+                          setThumbMenu({
+                            x: Math.min(e.clientX, window.innerWidth - 190),
+                            y: Math.min(e.clientY, window.innerHeight - 280),
+                            origIdx,
+                          })
+                        }}
+                      >
+                        <div
+                          className="pdf-thumb-box"
+                          style={{ aspectRatio: `${size.width} / ${size.height}` }}
+                        >
+                          <PdfThumb
+                            doc={doc}
+                            pageNo={origIdx + 1}
+                            rotationDelta={rotDelta(origIdx)}
+                            visible={visibleThumbs.has(v)}
+                            rasterW={thumbRasterW}
+                          />
+                        </div>
+                        <span className="pdf-thumb-no">{v + 1}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </aside>
+            )}
             {searchOpen && (
               <div className="pdf-search-bar">
                 <input
