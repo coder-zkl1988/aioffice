@@ -81,8 +81,14 @@ export interface FetchWithSsrfGuardOptions {
   /** Redirect hops to follow. Each hop is revalidated. Defaults to 5. */
   maxRedirects?: number
   headers?: Record<string, string>
+  signal?: AbortSignal
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch
+}
+
+export interface GuardedFetchResult {
+  response: Response
+  url: string
 }
 
 /**
@@ -90,20 +96,21 @@ export interface FetchWithSsrfGuardOptions {
  * manually. Returns null when any hop fails validation, a redirect lacks a
  * usable Location, or the hop budget is exhausted.
  */
-export async function fetchWithSsrfGuard(
+export async function fetchWithSsrfGuardResult(
   rawUrl: string,
   options: FetchWithSsrfGuardOptions = {},
-): Promise<Response | null> {
-  const { maxRedirects = 5, headers, fetchImpl = fetch } = options
+): Promise<GuardedFetchResult | null> {
+  const { maxRedirects = 5, headers, signal, fetchImpl = fetch } = options
   let current = rawUrl
   for (let hop = 0; hop <= maxRedirects; hop++) {
     if (!(await isSafeRemoteUrl(current))) return null
     // headers stays absent rather than explicitly undefined (exactOptionalPropertyTypes)
     const resp = await fetchImpl(current, {
       ...(headers ? { headers } : {}),
+      ...(signal ? { signal } : {}),
       redirect: 'manual',
     })
-    if (resp.status < 300 || resp.status >= 400) return resp
+    if (resp.status < 300 || resp.status >= 400) return { response: resp, url: current }
     const location = resp.headers.get('location')
     if (!location) return null
     try {
@@ -113,4 +120,11 @@ export async function fetchWithSsrfGuard(
     }
   }
   return null
+}
+
+export async function fetchWithSsrfGuard(
+  rawUrl: string,
+  options: FetchWithSsrfGuardOptions = {},
+): Promise<Response | null> {
+  return (await fetchWithSsrfGuardResult(rawUrl, options))?.response ?? null
 }

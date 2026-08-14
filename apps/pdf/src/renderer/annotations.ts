@@ -68,6 +68,33 @@ export function pdfRectToCss(
   }
 }
 
+/** Center-rotated PDF image rect → CSS preview matching the page's total /Rotate. */
+export function pdfStampToCss(
+  g: PageGeom,
+  rect: readonly [number, number, number, number],
+  rotation: number,
+  scale: number,
+): {
+  left: number
+  top: number
+  width: number
+  height: number
+  transform: string
+  transformOrigin: string
+} {
+  const width = Math.abs(rect[2] - rect[0]) * scale
+  const height = Math.abs(rect[3] - rect[1]) * scale
+  const [centerX, centerY] = pdfToView(g, (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2)
+  return {
+    left: centerX * scale - width / 2,
+    top: centerY * scale - height / 2,
+    width,
+    height,
+    transform: `rotate(${normRot(g.rot) - rotation}deg)`,
+    transformOrigin: 'center',
+  }
+}
+
 /** quad (corners in any order) → PDF-space bounding rect */
 export function quadToRect(q: number[]): [number, number, number, number] {
   const xs = [q[0]!, q[2]!, q[4]!, q[6]!]

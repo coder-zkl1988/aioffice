@@ -13,10 +13,12 @@ import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import { AiPanel, GensparkMark } from './ai/AiPanel'
 import type { PdfAiDeps } from './ai/tools'
+import { prepareAiCreatedPdf } from './ai-created-pdf'
 import {
   MARKUP_COLORS,
   geomDispSize,
   pdfRectToCss,
+  pdfStampToCss,
   quadToRect,
   selectionQuadsByPage,
   viewToPdf,
@@ -25,22 +27,56 @@ import type { LocalMarkup, PageGeom } from './annotations'
 import { groupLineSpans } from './text-line'
 import { DRAW_COLORS, DrawLayer, cssRgb } from './DrawLayer'
 import type { DrawTool, LocalDrawing } from './DrawLayer'
+import { CommentLayer } from './CommentLayer'
 import { FormLayer } from './FormLayer'
 import { ImageEditLayer, imageRectKey } from './ImageEditLayer'
 import type { LocalImageEdit } from './ImageEditLayer'
 import { navAction } from './keyNav'
+import { renderAdjustedPdfPages } from './adjust-colors'
+import { detectPdfAutoCropBoxes } from './auto-crop'
+import { analyzePdfAutoRotation } from './auto-rotate'
+import { inferPdfAutoRenameTitle } from './auto-rename'
+import { detectPdfAutoSplitDividerPages } from './auto-split'
+import { extractEmbeddedPdfImages } from './extract-images'
+import { extractPdfTables } from './extract-tables'
+import { extractPdfJsonPages, extractPdfTextPages } from './extract-text'
+import { loadPdfJsonImportFonts } from './json-to-pdf'
+import { analyzePdfContentFilter } from './filter-pages'
+import { compressionImageQuality, renderFlattenedPdfPages } from './flatten-pdf'
+import { renderComparedPdfPages } from './compare-pdf'
+import { renderRedactedPdfPages } from './redact-pdf'
+import { resolvePdfCommentAnchors } from './pdf-comments'
+import { renderPdfPagesAsImages } from './pdf-to-images'
+import { renderPdfToWebm, type PdfVideoProgress } from './pdf-to-video'
+import { preparePdfEpubPages } from './pdf-to-epub'
+import { preparePdfHtmlPages } from './pdf-to-html'
+import { preparePdfPptxPages } from './pdf-to-pptx'
+import { preparePdfDocxPages } from './pdf-to-docx'
+import { prepareDeskewPdfPages } from './deskew'
+import { detectBlankPdfPages } from './remove-blanks'
+import { preparePdfOcr, type PdfOcrProgress } from './ocr'
+import { renderScannerEffectPdfPages } from './scanner-effect'
+import { renderScannedImagePages } from './scanner-image-split'
 import { rowOfVisIdx, spreadRows, stepPage } from './spread'
 import { LinkLayer } from './LinkLayer'
 import { OutlinePanel } from './OutlinePanel'
 import type { OutlineNode } from './OutlinePanel'
 import { printPdf } from './print'
 import { PropertiesDialog } from './PropertiesDialog'
+import {
+  PdfToolsDialog,
+  pdfToolLabel,
+  pdfToolSuccessText,
+  pdfToolsTabLabel,
+} from './PdfToolsDialog'
+import type { PdfBulkTextReplacementRequest, PdfToolKind } from './PdfToolsDialog'
 import { SignatureDialog, fileToCanvas } from './SignatureDialog'
 import type { SignatureData } from './SignatureDialog'
+import { signatureDrawingForField, type SignatureFieldTarget } from './signature-placement'
 import { StampDialog } from './StampDialog'
-import { buildStamps } from './stamps'
+import { buildStamps, compactStampImages, createWatermarkUuid } from './stamps'
 import type { HeaderFooterConfig, WatermarkConfig } from './stamps'
-import { buildSearchIndex, searchInIndex } from './search'
+import { buildSearchIndex, planBulkTextReplacements, searchInIndex } from './search'
 import type { SearchIndex, SearchMatch } from './search'
 import { groupPageBlocks, type TextBlock } from './text-block'
 import {
@@ -59,6 +95,17 @@ import {
   spliceCharColors,
 } from './color-runs'
 import { platformShortcuts } from '@genoffice/i18n'
+import {
+  pdfaPreservationReportBytes,
+  pdfEncryptionInfoBytes,
+  timestampPdfBytes,
+} from '@genoffice/pdf-tools'
+import type {
+  InsertBlankPageOptions,
+  PdfClassificationMetadata,
+  PdfOrientation,
+  PdfPageSize,
+} from '@genoffice/pdf-tools'
 import { useI18n } from './i18n/locale'
 import { useAutosave } from './useAutosave'
 import { EDIT_FONTS } from '../shared/ipc'
@@ -138,6 +185,7 @@ function useVisibleSet(
 ): { visible: Set<number>; setItemRef: (idx: number) => (el: HTMLElement | null) => void } {
   const [visible, setVisible] = useState<Set<number>>(new Set())
   const itemRefs = useRef<(HTMLElement | null)[]>([])
+  const observerRef = useRef<IntersectionObserver | null>(null)
   useEffect(() => {
     const root = rootRef.current
     if (!enabled || !root || count === 0) return
@@ -155,13 +203,21 @@ function useVisibleSet(
       },
       { root, rootMargin },
     )
+    observerRef.current = io
     for (const el of itemRefs.current) if (el) io.observe(el)
-    return () => io.disconnect()
+    return () => {
+      io.disconnect()
+      if (observerRef.current === io) observerRef.current = null
+    }
   }, [rootRef, count, rootMargin, enabled])
   return {
     visible,
     setItemRef: (idx) => (el) => {
+      const previous = itemRefs.current[idx]
+      if (previous === el) return
+      if (previous) observerRef.current?.unobserve(previous)
       itemRefs.current[idx] = el
+      if (el) observerRef.current?.observe(el)
     },
   }
 }
@@ -478,6 +534,14 @@ const IconProps = () => (
     <circle cx="12" cy="8.46" r="0.94" fill="currentColor" stroke="none" />
   </Icon>
 )
+const IconLock = () => (
+  <Icon>
+    <rect x="5.5" y="10" width="13" height="10" rx="1.5" />
+    <path d="M8.5 10 V7.5 A3.5 3.5 0 0 1 15.5 7.5 V10" />
+    <circle cx="12" cy="14.5" r="1" fill="currentColor" stroke="none" />
+    <path d="M12 15.5 V17.3" />
+  </Icon>
+)
 const IconRotateL = () => (
   <Icon>
     <path d="M8.28 10.3 L4.53 10.3 L4.53 6.55" />
@@ -509,6 +573,12 @@ const IconInsertPdf = () => (
     <path d="M7.7 4.5 H13.7 L17.2 8 V18.5 A1 1 0 0 1 16.2 19.5 H7.7 A1 1 0 0 1 6.7 18.5 V5.5 A1 1 0 0 1 7.7 4.5 Z" />
     <path d="M13.7 4.5 V8 H17.2" />
     <path d="M11.95 11 V17 M8.95 14 H14.95" />
+  </Icon>
+)
+const IconBlankPage = () => (
+  <Icon>
+    <rect x="6.5" y="4.5" width="11" height="15" rx="1" />
+    <path d="M12 10 V16 M9 13 H15" />
   </Icon>
 )
 const IconFitWidth = () => (
@@ -672,6 +742,56 @@ interface ThumbMenu {
   origIdx: number
 }
 
+type BlankPagePosition = 'before' | 'after' | 'start' | 'end'
+
+const BLANK_PAGE_DIALOG_TEXT = {
+  en: {
+    title: 'Insert blank pages',
+    options: 'Blank page options',
+    position: 'Position',
+    before: 'Before current page',
+    after: 'After current page',
+    start: 'Start of document',
+    end: 'End of document',
+    count: 'Page count',
+    size: 'Paper size',
+    match: 'Match current page',
+    orientation: 'Orientation',
+    portrait: 'Portrait',
+    landscape: 'Landscape',
+  },
+  zh: {
+    title: '插入空白页',
+    options: '空白页设置',
+    position: '插入位置',
+    before: '当前页之前',
+    after: '当前页之后',
+    start: '文档开头',
+    end: '文档末尾',
+    count: '页数',
+    size: '纸张',
+    match: '与当前页一致',
+    orientation: '方向',
+    portrait: '纵向',
+    landscape: '横向',
+  },
+  'zh-TW': {
+    title: '插入空白頁',
+    options: '空白頁設定',
+    position: '插入位置',
+    before: '目前頁之前',
+    after: '目前頁之後',
+    start: '文件開頭',
+    end: '文件末尾',
+    count: '頁數',
+    size: '紙張',
+    match: '與目前頁一致',
+    orientation: '方向',
+    portrait: '直向',
+    landscape: '橫向',
+  },
+} as const
+
 const DRAW_TOOLS = [
   { tool: 'ink' as const, icon: IconInk, key: 'drawInk' as const },
   { tool: 'rect' as const, icon: IconRect, key: 'drawRect' as const },
@@ -687,6 +807,7 @@ const RIBBON_TABS = [
   { id: 'edit', labelKey: 'ribbonTabEdit' },
   { id: 'page', labelKey: 'ribbonTabPage' },
   { id: 'view', labelKey: 'ribbonTabView' },
+  { id: 'tools', labelKey: null },
 ] as const
 type RibbonTab = (typeof RIBBON_TABS)[number]['id']
 
@@ -740,6 +861,10 @@ const STROKE_WIDTH = 2
 interface StampConfig {
   wm: WatermarkConfig | null
   hf: HeaderFooterConfig | null
+  /** Original page indexes selected when the watermark was applied; null preserves legacy all-page configs. */
+  wmPageIndexes: number[] | null
+  /** Original page indexes selected for headers/footers; null preserves legacy all-page configs. */
+  hfPageIndexes: number[] | null
 }
 
 interface LocalTextEdit {
@@ -863,6 +988,7 @@ interface EditSnapshot {
   deleted: Set<number>
   order: number[] | null
   metadata: MetadataInput | null
+  classification: PdfClassificationMetadata | null
 }
 
 /** What a running save wrote, captured when the save starts. The post-save reload
@@ -877,6 +1003,7 @@ interface SavedSnapshot {
   formEdits: Map<string, FormValueInput>
   rotations: Map<number, number>
   metadata: MetadataInput | null
+  classification: PdfClassificationMetadata | null
   /** Old original page index → its index in the saved file (saved deletions/reorder applied) */
   pageMap: Map<number, number>
 }
@@ -992,7 +1119,7 @@ function SignDropOverlay({
 }
 
 export default function App() {
-  const { t } = useI18n()
+  const { lang, t } = useI18n()
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null)
   const [filePath, setFilePath] = useState('')
   const [status, setStatus] = useState<'loading' | 'error' | 'empty' | 'password' | 'ready'>(
@@ -1185,12 +1312,17 @@ export default function App() {
   /** User-defined page order (original page indices); null means unreordered */
   const [order, setOrder] = useState<number[] | null>(null)
   const [metadata, setMetadata] = useState<MetadataInput | null>(null)
+  const [classification, setClassification] = useState<PdfClassificationMetadata | null>(null)
+  const [documentMetadata, setDocumentMetadata] = useState<MetadataInput>({})
   const [stampDlg, setStampDlg] = useState(false)
   const [propsDlg, setPropsDlg] = useState(false)
   const [fileSize, setFileSize] = useState(0)
   const [dragFrom, setDragFrom] = useState<number | null>(null)
   const [dragOver, setDragOver] = useState<number | null>(null)
   const [signDlg, setSignDlg] = useState(false)
+  const [signatureFieldTarget, setSignatureFieldTarget] = useState<SignatureFieldTarget | null>(
+    null,
+  )
   /** Confirmed signature awaiting placement; when non-null the page enters click-to-place mode */
   const [pendingSign, setPendingSign] = useState<SignatureData | null>(null)
   const [exporting, setExporting] = useState(false)
@@ -1221,6 +1353,18 @@ export default function App() {
   const [extractDlg, setExtractDlg] = useState(false)
   const [extractInput, setExtractInput] = useState('')
   const [extractInvalid, setExtractInvalid] = useState(false)
+  const [blankPageDlg, setBlankPageDlg] = useState(false)
+  const [blankPageAnchor, setBlankPageAnchor] = useState(0)
+  const [blankPagePosition, setBlankPagePosition] = useState<BlankPagePosition>('after')
+  const [blankPageCount, setBlankPageCount] = useState(1)
+  const [blankPageSize, setBlankPageSize] = useState<PdfPageSize>('KEEP')
+  const [blankPageOrientation, setBlankPageOrientation] = useState<PdfOrientation>('portrait')
+  const [toolDlg, setToolDlg] = useState<PdfToolKind | null>(null)
+  const [toolBusy, setToolBusy] = useState(false)
+  const [ocrProgress, setOcrProgress] = useState<PdfOcrProgress | null>(null)
+  const [videoProgress, setVideoProgress] = useState<PdfVideoProgress | null>(null)
+  const [encrypted, setEncrypted] = useState(false)
+  const [digitallySigned, setDigitallySigned] = useState(false)
   const coalesceKeyRef = useRef<string | null>(null)
   const passwordRef = useRef<string | undefined>(undefined)
   const fitModeRef = useRef<FitMode>('width')
@@ -1231,6 +1375,7 @@ export default function App() {
     null,
   )
   const searchJumpRef = useRef<{ matches: SearchMatch[]; cur: number } | null>(null)
+  const pendingPageJumpRef = useRef<number | null>(null)
 
   /** Visible pages (with unsaved reorder, deleted pages hidden): position → original page index */
   const visList = useMemo(() => {
@@ -1244,6 +1389,15 @@ export default function App() {
   /** Visible position → row index */
   const rowOfVis = useCallback((visIdx: number) => rowOfVisIdx(visIdx, spread), [spread])
   const fileName = filePath.split(/[\\/]/).pop() ?? filePath
+  const effectiveMetadata = useMemo<MetadataInput>(
+    () => ({
+      title: metadata?.title ?? documentMetadata.title ?? '',
+      author: metadata?.author ?? documentMetadata.author ?? '',
+      subject: metadata?.subject ?? documentMetadata.subject ?? '',
+      keywords: metadata?.keywords ?? documentMetadata.keywords ?? '',
+    }),
+    [documentMetadata, metadata],
+  )
 
   const rotDelta = useCallback((origIdx: number) => rotations.get(origIdx) ?? 0, [rotations])
   /** Page geometry: unrotated size + total display rotation; the single entry point for overlay coord conversion */
@@ -1264,22 +1418,26 @@ export default function App() {
     scrollRef,
     rows.length,
     '800px 0px',
+    status === 'ready',
   )
   const { visible: visibleThumbs, setItemRef: setThumbRef } = useVisibleSet(
     thumbsRef,
     pageCount,
     '400px 0px',
-    sidebar === 'thumbs',
+    status === 'ready' && sidebar === 'thumbs',
   )
 
   const loadDoc = useCallback(
     async (path: string, previous: PDFDocumentProxy | null, saved?: SavedSnapshot) => {
       const data = await window.pdfApi.readFile(path)
+      setEncrypted((await pdfEncryptionInfoBytes(data)).encrypted)
       const loaded = await getDocument({
         data: new Uint8Array(data),
         password: passwordRef.current,
         ...DOC_OPTS,
       }).promise
+      const signatures = await loaded.getSignatures().catch(() => null)
+      setDigitallySigned((signatures?.length ?? 0) > 0)
       const all: PageSize[] = []
       const rots: number[] = []
       for (let i = 1; i <= loaded.numPages; i++) {
@@ -1292,6 +1450,19 @@ export default function App() {
       setSizes(all)
       setBaseRots(rots)
       setDoc(loaded)
+      const loadedMetadata = await loaded.getMetadata().catch(() => ({ info: null }))
+      const rawInfo = (loadedMetadata.info ?? {}) as {
+        Title?: string
+        Author?: string
+        Subject?: string
+        Keywords?: string
+      }
+      setDocumentMetadata({
+        title: rawInfo.Title ?? '',
+        author: rawInfo.Author ?? '',
+        subject: rawInfo.Subject ?? '',
+        keywords: rawInfo.Keywords ?? '',
+      })
       if (!saved) {
         setMarkups([])
         setDrawings([])
@@ -1304,6 +1475,7 @@ export default function App() {
         setDeleted(new Set())
         setOrder(null)
         setMetadata(null)
+        setClassification(null)
       } else {
         // Post-save reload: subtract exactly what the save wrote. Edits made while the
         // write was in flight stay pending, with page indices remapped through the
@@ -1363,6 +1535,7 @@ export default function App() {
         // it is in the file now, a new object means the user changed it during the save
         setStampCfg((prev) => (prev === saved.stampCfg ? null : prev))
         setMetadata((prev) => (prev === saved.metadata ? null : prev))
+        setClassification((prev) => (prev === saved.classification ? null : prev))
         setFormEdits((prev) => {
           const next = new Map<string, FormValueInput>()
           for (const [k, v] of prev) if (saved.formEdits.get(k) !== v) next.set(k, v)
@@ -1442,8 +1615,8 @@ export default function App() {
     })()
   }, [openPath])
 
-  /** Documents opened with a password are treated as read-only: pdf-lib can't write back encrypted files */
-  const readOnly = status === 'ready' && passwordRef.current !== undefined
+  /** Encrypted and digitally signed PDFs are view-only because saves rewrite the file bytes. */
+  const readOnly = status === 'ready' && (encrypted || digitallySigned)
 
   const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s))
 
@@ -1518,6 +1691,15 @@ export default function App() {
     el.scrollTop = rowTop(rowOfVis(target - 1)) - PAGE_GAP / 2
   }
 
+  useEffect(() => {
+    const target = pendingPageJumpRef.current
+    if (target === null || target > pageCount) return
+    pendingPageJumpRef.current = null
+    setCurrentPage(target)
+    setPageInput(String(target))
+    scrollToPage(target)
+  }, [pageCount, rows])
+
   /** Scale scroll position proportionally when zooming so the visual anchor doesn't jump */
   const applyScale = (next: number, mode: FitMode) => {
     fitModeRef.current = mode
@@ -1552,7 +1734,8 @@ export default function App() {
     rotations.size > 0 ||
     deleted.size > 0 ||
     order !== null ||
-    metadata !== null
+    metadata !== null ||
+    classification !== null
 
   // Mirror dirty state to the main process (close-tab/close-window guard)
   useEffect(() => {
@@ -1593,6 +1776,7 @@ export default function App() {
     deleted,
     order,
     metadata,
+    classification,
   })
 
   const pushUndo = (coalesceKey?: string) => {
@@ -1619,6 +1803,7 @@ export default function App() {
     setDeleted(s.deleted)
     setOrder(s.order)
     setMetadata(s.metadata)
+    setClassification(s.classification)
     // The selected annotation may no longer exist in the restored snapshot
     setSelected(null)
   }
@@ -1656,7 +1841,6 @@ export default function App() {
   useEffect(() => {
     setPageBlocks(new Map())
     clearBlockHover()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc])
 
   /** Cluster paragraph boxes for pages scrolled into view while edit-text mode is on.
@@ -2457,18 +2641,26 @@ export default function App() {
   }
 
   /** Pending edits in SavePdfRequest form; shared by in-place Save and Save As */
-  const editsPayload = (edits: LocalTextEdit[] = textEdits) => ({
-    markups: markups.map(({ id: _id, ...rest }) => rest),
-    drawings: drawings.map((d) => d.input),
-    textEdits: edits.map((e) => e.input),
-    imageEdits: imageEdits.map((e) => e.input),
-    stamps: stampCfg ? renderStamps(stampCfg, visList) : [],
-    formValues: [...formEdits.values()],
-    rotations: [...rotations].map(([pageIndex, delta]) => ({ pageIndex, delta })),
-    deletedPages: [...deleted],
-    ...(order ? { pageOrder: visList } : {}),
-    ...(metadata ? { metadata } : {}),
-  })
+  const editsPayload = (edits: LocalTextEdit[] = textEdits) => {
+    const compacted = compactStampImages(stampCfg ? renderStamps(stampCfg, visList) : [])
+    return {
+      markups: markups.map(({ id: _id, ...rest }) => rest),
+      drawings: drawings.map((d) => d.input),
+      removeSignatureFields: drawings.flatMap((drawing) =>
+        drawing.sourceSignatureField ? [drawing.sourceSignatureField] : [],
+      ),
+      textEdits: edits.map((e) => e.input),
+      imageEdits: imageEdits.map((e) => e.input),
+      stamps: compacted.stamps,
+      stampImages: compacted.stampImages,
+      formValues: [...formEdits.values()],
+      rotations: [...rotations].map(([pageIndex, delta]) => ({ pageIndex, delta })),
+      deletedPages: [...deleted],
+      ...(order ? { pageOrder: visList } : {}),
+      ...(metadata ? { metadata } : {}),
+      ...(classification ? { classification } : {}),
+    }
+  }
 
   /** Resolved when the running save() lands; queued saves and Save As serialize behind it */
   const saveInFlightRef = useRef<Promise<boolean> | null>(null)
@@ -2506,6 +2698,7 @@ export default function App() {
       formEdits,
       rotations,
       metadata,
+      classification,
       pageMap: new Map(visList.map((origIdx, i) => [origIdx, i])),
     }
     const run = (async (): Promise<boolean> => {
@@ -2541,6 +2734,683 @@ export default function App() {
     })
     saveInFlightRef.current = tracked
     return tracked
+  }
+
+  const runPdfTool = async (operation: import('@genoffice/pdf-tools').PdfToolOperation) => {
+    if (!filePath || toolBusy) return
+    setToolBusy(true)
+    try {
+      if (!(operation.kind === 'password' && operation.action === 'unlock') && !(await save()))
+        return
+      let preparedOperation = operation
+      if (operation.kind === 'crop' && operation.mode === 'auto') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            pageBoxes: await detectPdfAutoCropBoxes(sourceDocument, operation),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'ocr') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          const prepared = await preparePdfOcr(sourceDocument, operation, setOcrProgress)
+          preparedOperation = { ...operation, ...prepared, baseName: fileName }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'adjustColors') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            pageImages: await renderAdjustedPdfPages(
+              sourceDocument,
+              operation.pageIndexes,
+              operation,
+            ),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'autoRotate') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            pageRotations: (await analyzePdfAutoRotation(sourceDocument, operation.inferUndetected))
+              .pageRotations,
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'autoRename') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            suggestedName:
+              (await inferPdfAutoRenameTitle(sourceDocument, operation.strategy)) || fileName,
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'deskew') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            pages: await prepareDeskewPdfPages(sourceDocument, operation),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'pageNumbers') {
+        preparedOperation = { ...operation, baseName: fileName }
+      } else if (operation.kind === 'timestamp') {
+        const data = new Uint8Array(await window.pdfApi.readFile(filePath))
+        const result = await timestampPdfBytes(data, (request) =>
+          window.pdfApi.requestTimestampToken({ tsaUrl: operation.tsaUrl, request }),
+        )
+        preparedOperation = { ...operation, timestampedBytes: result.bytes }
+      } else if (operation.kind === 'scannerEffect') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            pageImages: await renderScannerEffectPdfPages(sourceDocument, operation),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'scannerImageSplit') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            pages: await renderScannedImagePages(sourceDocument, operation),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'autoSplit' && operation.action === 'split') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            baseName: fileName,
+            dividerPageIndexes: await detectPdfAutoSplitDividerPages(sourceDocument),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'compare') {
+        const data = await window.pdfApi.readFile(filePath)
+        const sourceLoadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const comparisonLoadingTask = getDocument({
+          data: new Uint8Array(operation.comparisonDocument),
+          ...DOC_OPTS,
+        })
+        const [sourceDocument, comparisonDocument] = await Promise.all([
+          sourceLoadingTask.promise,
+          comparisonLoadingTask.promise,
+        ])
+        try {
+          preparedOperation = {
+            ...operation,
+            pages: (
+              await renderComparedPdfPages(
+                sourceDocument,
+                comparisonDocument,
+                operation.renderDpi,
+                operation.threshold,
+              )
+            ).pages,
+          }
+        } finally {
+          await Promise.all([sourceLoadingTask.destroy(), comparisonLoadingTask.destroy()])
+        }
+      } else if (operation.kind === 'redact') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            pages: await renderRedactedPdfPages(sourceDocument, operation),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'comments') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            comments: await resolvePdfCommentAnchors(sourceDocument, operation.comments),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'compress') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            pageImages: await renderFlattenedPdfPages(
+              sourceDocument,
+              operation.renderDpi,
+              compressionImageQuality(operation.imageQuality),
+              operation.lineArt
+                ? {
+                    threshold: operation.lineArtThreshold ?? 55,
+                    edgeLevel: operation.lineArtEdgeLevel ?? 1,
+                  }
+                : undefined,
+            ),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'pdfToPdfa') {
+        const data = await window.pdfApi.readFile(filePath)
+        const sourceBytes = new Uint8Array(data)
+        const preservation = await pdfaPreservationReportBytes(sourceBytes)
+        if (operation.archiveMode === 'raster' || !preservation.eligible) {
+          const loadingTask = getDocument({
+            data: sourceBytes,
+            password: passwordRef.current,
+            ...DOC_OPTS,
+          })
+          const sourceDocument = await loadingTask.promise
+          try {
+            preparedOperation = {
+              ...operation,
+              pageImages: await renderFlattenedPdfPages(
+                sourceDocument,
+                operation.renderDpi,
+                compressionImageQuality(operation.imageQuality),
+              ),
+            }
+          } finally {
+            await loadingTask.destroy()
+          }
+        }
+      } else if (operation.kind === 'flatten' && operation.mode === 'pages') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            pageImages: await renderFlattenedPdfPages(sourceDocument, operation.renderDpi),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'removeBlanks') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            blankPageIndexes: await detectBlankPdfPages(sourceDocument, operation),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'extractImages') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            baseName: fileName,
+            images: await extractEmbeddedPdfImages(sourceDocument, operation.format),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'pdfToImages') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            baseName: fileName,
+            images: await renderPdfPagesAsImages(sourceDocument, operation),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'pdfToVideo') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          setVideoProgress({
+            pageNumber: 1,
+            pageCount: operation.pageIndexes.length,
+            progress: 0,
+          })
+          preparedOperation = {
+            ...operation,
+            baseName: fileName,
+            videoBytes: await renderPdfToWebm(sourceDocument, operation, setVideoProgress),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'pdfToCbz') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            baseName: fileName,
+            images: await renderPdfPagesAsImages(sourceDocument, {
+              ...operation,
+              outputMode: 'multiple',
+            }),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'pdfToHtml') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            baseName: fileName,
+            pages: await preparePdfHtmlPages(sourceDocument, operation),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'pdfToEpub') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            baseName: fileName,
+            pages: await preparePdfEpubPages(sourceDocument, operation),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'pdfToPptx') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            baseName: fileName,
+            pages: await preparePdfPptxPages(sourceDocument, operation),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'pdfToDocx' || operation.kind === 'pdfToOdt') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            baseName: fileName,
+            pages: await preparePdfDocxPages(sourceDocument, operation),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'pdfToRtf') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            baseName: fileName,
+            pages: await preparePdfDocxPages(sourceDocument, {
+              pageIndexes: operation.pageIndexes,
+              mode: 'editableText',
+              renderDpi: 72,
+              includeAnnotations: false,
+            }),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'extractText' || operation.kind === 'pdfToMarkdown') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            ...(operation.kind === 'pdfToMarkdown' ? { baseName: fileName } : {}),
+            pages: await extractPdfTextPages(sourceDocument, operation.pageIndexes),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'jsonToPdf') {
+        preparedOperation = {
+          ...operation,
+          fonts: await loadPdfJsonImportFonts(),
+        }
+      } else if (operation.kind === 'pdfToJson' || operation.kind === 'pdfToXml') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            baseName: fileName,
+            pages: await extractPdfJsonPages(
+              sourceDocument,
+              operation.pageIndexes,
+              operation.lightweight,
+            ),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (operation.kind === 'extractTables' || operation.kind === 'pdfToXlsx') {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            baseName: fileName,
+            tables: await extractPdfTables(sourceDocument, operation.pageIndexes, {
+              includeTwoColumnTextTables: operation.includeTwoColumnTextTables,
+            }),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (
+        operation.kind === 'filterPages' &&
+        (operation.criterion === 'text' || operation.criterion === 'image')
+      ) {
+        const data = await window.pdfApi.readFile(filePath)
+        const loadingTask = getDocument({
+          data: new Uint8Array(data),
+          password: passwordRef.current,
+          ...DOC_OPTS,
+        })
+        const sourceDocument = await loadingTask.promise
+        try {
+          preparedOperation = {
+            ...operation,
+            matchedPageIndexes: await analyzePdfContentFilter(sourceDocument, operation),
+          }
+        } finally {
+          await loadingTask.destroy()
+        }
+      } else if (
+        operation.kind === 'filterDocuments' &&
+        (operation.criterion === 'text' || operation.criterion === 'image')
+      ) {
+        const contentCriterion = operation.criterion
+        const analyzeDocument = async (data: Uint8Array, password?: string) => {
+          const loadingTask = getDocument({ data, password, ...DOC_OPTS })
+          const sourceDocument = await loadingTask.promise
+          try {
+            const matchedPages = await analyzePdfContentFilter(sourceDocument, {
+              criterion: contentCriterion,
+              pageIndexes: Array.from(
+                { length: sourceDocument.numPages },
+                (_, pageIndex) => pageIndex,
+              ),
+              text: operation.text,
+              caseSensitive: operation.caseSensitive,
+              wholeWord: operation.wholeWord,
+            })
+            return matchedPages.length > 0
+          } finally {
+            await loadingTask.destroy()
+          }
+        }
+        const currentData = new Uint8Array(await window.pdfApi.readFile(filePath))
+        preparedOperation = {
+          ...operation,
+          currentContentMatched: await analyzeDocument(currentData, passwordRef.current),
+          documents: await Promise.all(
+            operation.documents.map(async (document) => ({
+              ...document,
+              contentMatched: await analyzeDocument(new Uint8Array(document.bytes)),
+            })),
+          ),
+        }
+      }
+      const result = await window.pdfApi.runTool({
+        path: filePath,
+        baseName: fileName,
+        operation: preparedOperation,
+      })
+      if (!result.ok) {
+        showNotice(result.error)
+        return
+      }
+      if ('canceled' in result) return
+      if (!(operation.kind === 'autoSplit' && operation.action === 'divider')) setToolDlg(null)
+      showNotice(pdfToolSuccessText(lang, result.count))
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : String(error))
+    } finally {
+      setOcrProgress(null)
+      setVideoProgress(null)
+      setToolBusy(false)
+    }
+  }
+
+  const runBulkTextReplacement = async (request: PdfBulkTextReplacementRequest) => {
+    if (!filePath || toolBusy) return
+    setToolBusy(true)
+    try {
+      if (!(await save())) return
+      const data = await window.pdfApi.readFile(filePath)
+      const loadingTask = getDocument({
+        data: new Uint8Array(data),
+        password: passwordRef.current,
+        ...DOC_OPTS,
+      })
+      const sourceDocument = await loadingTask.promise
+      let plan
+      try {
+        plan = planBulkTextReplacements(
+          await buildSearchIndex(sourceDocument),
+          request.rules,
+          request.pageIndexes,
+          {
+            caseSensitive: request.caseSensitive,
+            wholeWord: request.wholeWord,
+          },
+        )
+      } finally {
+        await loadingTask.destroy()
+      }
+      if (plan.matchCount === 0) {
+        showNotice(lang === 'zh' || lang === 'zh-TW' ? '未找到匹配文字' : 'No matching text found')
+        return
+      }
+      if (plan.edits.length === 0) {
+        showNotice(
+          lang === 'zh' || lang === 'zh-TW'
+            ? '找到了文字，但无法定位可编辑的 PDF 文本片段'
+            : 'Matches were found, but no editable PDF text spans could be located',
+        )
+        return
+      }
+      const stem = fileName.replace(/\.pdf$/i, '') || 'Document'
+      const result = await window.pdfApi.bulkReplaceText({
+        path: filePath,
+        suggestedName: `${stem}_text_replaced.pdf`,
+        edits: plan.edits,
+      })
+      if (!result.ok) {
+        showNotice(result.error)
+        return
+      }
+      if ('canceled' in result) return
+      setToolDlg(null)
+      const skipped = result.skipped.length + plan.skippedSpans
+      showNotice(
+        lang === 'zh' || lang === 'zh-TW'
+          ? `已替换 ${plan.matchCount} 处文字并导出新 PDF${skipped ? `，${skipped} 个片段未处理` : ''}`
+          : `Replaced ${plan.matchCount} occurrence(s) in a new PDF${
+              skipped ? `; ${skipped} span(s) were skipped` : ''
+            }`,
+      )
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : String(error))
+    } finally {
+      setToolBusy(false)
+    }
   }
 
   // Drain queued saves. This effect runs after every commit, so by the time it fires
@@ -2671,15 +3541,49 @@ export default function App() {
         })),
         cfg.wm,
         cfg.hf,
+        {
+          fileName,
+          watermarkPageIndexes: cfg.wmPageIndexes,
+          headerFooterPageIndexes: cfg.hfPageIndexes,
+          metadata: effectiveMetadata,
+        },
       ),
-    [sizes],
+    [effectiveMetadata, fileName, sizes],
   )
 
-  const applyStamps = (wm: WatermarkConfig | null, hf: HeaderFooterConfig | null) => {
+  const applyStamps = (
+    wm: WatermarkConfig | null,
+    hf: HeaderFooterConfig | null,
+    watermarkPageNumbers: number[] | null,
+    headerFooterPageNumbers: number[] | null,
+  ) => {
     setStampDlg(false)
     if (!wm && !hf) return
     pushUndo()
-    setStampCfg({ wm, hf })
+    setStampCfg({
+      wm: wm
+        ? {
+            ...wm,
+            appliedAt: new Date().toISOString(),
+            uuid: wm.uuid || createWatermarkUuid(),
+          }
+        : null,
+      hf,
+      wmPageIndexes:
+        wm && watermarkPageNumbers
+          ? watermarkPageNumbers.flatMap((pageNumber) => {
+              const pageIndex = visList[pageNumber - 1]
+              return pageIndex === undefined ? [] : [pageIndex]
+            })
+          : null,
+      hfPageIndexes:
+        hf && headerFooterPageNumbers
+          ? headerFooterPageNumbers.flatMap((pageNumber) => {
+              const pageIndex = visList[pageNumber - 1]
+              return pageIndex === undefined ? [] : [pageIndex]
+            })
+          : null,
+    })
   }
 
   /** Stamp preview for visible pages (only pages in rendered rows, so large docs don't render every canvas) */
@@ -3195,13 +4099,13 @@ export default function App() {
     await fn()
   }
 
-  const extractPage = (origIdx: number) =>
+  const extractPage = (visibleIndex: number) =>
     flushThen(async () => {
       const base = fileName.replace(/\.pdf$/i, '')
       const result = await window.pdfApi.extractPages({
         path: filePath,
-        pages: [origIdx],
-        suggestedName: `${base}-p${origIdx + 1}.pdf`,
+        pages: [visibleIndex],
+        suggestedName: `${base}-p${visibleIndex + 1}.pdf`,
       })
       if (!result.ok) opFailed(result.error)
     })
@@ -3232,15 +4136,57 @@ export default function App() {
     })
   }
 
-  const insertPdf = (afterOrigIdx: number) =>
+  const insertPdf = (afterVisibleIndex: number) =>
     flushThen(async () => {
-      const result = await window.pdfApi.insertPdf({ path: filePath, afterPageIndex: afterOrigIdx })
+      const result = await window.pdfApi.insertPdf({
+        path: filePath,
+        afterPageIndex: afterVisibleIndex,
+      })
       if (!result.ok) {
         opFailed(result.error)
         return
       }
       if (!('canceled' in result)) await loadDoc(filePath, doc)
     })
+
+  const insertBlankPage = (afterVisibleIndex: number, options: InsertBlankPageOptions = {}) =>
+    flushThen(async () => {
+      const result = await window.pdfApi.insertBlankPage({
+        path: filePath,
+        afterPageIndex: afterVisibleIndex,
+        ...options,
+      })
+      if (!result.ok) {
+        opFailed(result.error)
+        return
+      }
+      pendingPageJumpRef.current = afterVisibleIndex + 2
+      await loadDoc(filePath, doc)
+    })
+
+  const openBlankPageDialog = (visibleIndex: number) => {
+    setBlankPageAnchor(Math.max(0, visibleIndex))
+    setBlankPagePosition('after')
+    setBlankPageDlg(true)
+  }
+
+  const confirmBlankPageInsert = () => {
+    if (!Number.isInteger(blankPageCount) || blankPageCount < 1 || blankPageCount > 100) return
+    const afterVisibleIndex =
+      blankPagePosition === 'start'
+        ? -1
+        : blankPagePosition === 'end'
+          ? pageCount - 1
+          : blankPagePosition === 'before'
+            ? blankPageAnchor - 1
+            : blankPageAnchor
+    setBlankPageDlg(false)
+    void insertBlankPage(afterVisibleIndex, {
+      count: blankPageCount,
+      pageSize: blankPageSize,
+      orientation: blankPageOrientation,
+    })
+  }
 
   /** Print: save first (markups/forms/page ops all into the file), then reload from the file to render, avoiding a destroyed old doc */
   const printDoc = () =>
@@ -3291,6 +4237,40 @@ export default function App() {
           quads,
         },
       ])
+    },
+    addReviewComment: (comment) => {
+      pushUndo()
+      setDrawings((prev) => [...prev, { id: newId(), input: comment }])
+    },
+    setClassification: (next) => {
+      pushUndoRef.current()
+      setClassification(next)
+    },
+    createPdfDocument: async (document) => {
+      if (!filePath) return { ok: false, error: 'Document is not ready' }
+      if (toolBusy) return { ok: false, error: 'Another PDF operation is still running' }
+      setToolBusy(true)
+      try {
+        const prepared = await prepareAiCreatedPdf(document)
+        const result = await window.pdfApi.runTool({
+          path: filePath,
+          baseName: fileName,
+          operation: { kind: 'createPdf', ...prepared },
+        })
+        if (!result.ok) {
+          showNotice(result.error)
+          return result
+        }
+        if ('canceled' in result) return result
+        showNotice(pdfToolSuccessText(lang, result.count))
+        return { ok: true, savedPath: result.savedPath, pageCount: prepared.pages.length }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        showNotice(message)
+        return { ok: false, error: message }
+      } finally {
+        setToolBusy(false)
+      }
     },
     editText: async (input) => {
       let cover: [number, number, number, number] | undefined
@@ -3571,6 +4551,8 @@ export default function App() {
   }
 
   const menuOrig = thumbMenu?.origIdx ?? -1
+  const menuVisibleIndex = thumbMenu ? visList.indexOf(menuOrig) : -1
+  const blankPageText = BLANK_PAGE_DIALOG_TEXT[lang === 'zh' || lang === 'zh-TW' ? lang : 'en']
 
   /** Ribbon AI buttons: expand the dock and auto-run the prompt in the assistant */
   const runAiPreset = (text: string): void => {
@@ -3799,14 +4781,16 @@ export default function App() {
               className={`ribbon-tab${ribbonTab === id ? ' active' : ''}`}
               onClick={() => setRibbonTab(id)}
             >
-              {t(labelKey)}
+              {labelKey ? t(labelKey) : pdfToolsTabLabel(lang)}
             </button>
           ))}
           <span className="ribbon-tabs-spacer" />
           <span className="ribbon-file" data-tip={filePath}>
             {fileName}
           </span>
-          {readOnly && <span className="tb-readonly">{t('roEncrypted')}</span>}
+          {readOnly && (
+            <span className="tb-readonly">{t(digitallySigned ? 'roSigned' : 'roEncrypted')}</span>
+          )}
           {/* Unsaved-changes indicator next to the file name: the file on disk
               is only touched by an explicit save until then */}
           {saveState === 'saving' ? (
@@ -3947,6 +4931,7 @@ export default function App() {
                     onClick={() => {
                       setImagePick(null)
                       setEditImageMode(false)
+                      setSignatureFieldTarget(null)
                       if (pendingSign) setPendingSign(null)
                       else setSignDlg(true)
                     }}
@@ -4102,10 +5087,32 @@ export default function App() {
                   </span>
                   {t('extractPage')}
                 </button>
+                <div className="rb-drop-wrap rb-split-action">
+                  <button
+                    className="rb-big"
+                    disabled={readOnly}
+                    onClick={() => void insertBlankPage(currentPage - 1)}
+                  >
+                    <span className="rb-big-icon">
+                      <IconBlankPage />
+                    </span>
+                    {t('insertBlankPage')}
+                  </button>
+                  <button
+                    className="rb-split-action-menu"
+                    type="button"
+                    disabled={readOnly}
+                    aria-label={blankPageText.options}
+                    data-tip={blankPageText.options}
+                    onClick={() => openBlankPageDialog(currentPage - 1)}
+                  >
+                    <RbCaret />
+                  </button>
+                </div>
                 <button
                   className="rb-big"
                   disabled={readOnly}
-                  onClick={() => void insertPdf(curOrigIdx)}
+                  onClick={() => void insertPdf(currentPage - 1)}
                 >
                   <span className="rb-big-icon">
                     <IconInsertPdf />
@@ -4120,6 +5127,130 @@ export default function App() {
               {viewNavGroup}
               <div className="ribbon-sep" />
               {pageZoomGroup}
+            </>
+          )}
+          {ribbonTab === 'tools' && (
+            <>
+              {(
+                [
+                  [
+                    ['split', IconExtract],
+                    ['merge', IconInsertPdf],
+                    ['compare', IconSpread],
+                    ['imagesToPdf', IconExportImg],
+                    ['cbzToPdf', IconInsertPdf],
+                    ['emailToPdf', IconInsertPdf],
+                    ['epubToPdf', IconInsertPdf],
+                    ['htmlToPdf', IconInsertPdf],
+                    ['markdownToPdf', IconInsertPdf],
+                    ['pdfToImages', IconExportImg],
+                    ['pdfToVideo', IconExportImg],
+                    ['pdfToCbz', IconExportImg],
+                    ['pdfToHtml', IconExportImg],
+                    ['pdfToEpub', IconExportImg],
+                    ['pdfToPptx', IconExportImg],
+                    ['pdfToDocx', IconExportImg],
+                    ['pdfToOdt', IconExportImg],
+                    ['pdfToRtf', IconExportImg],
+                    ['pdfToPdfa', IconProps],
+                    ['pdfToMarkdown', IconExportImg],
+                    ['pdfToXlsx', IconExportImg],
+                    ['pdfToXml', IconExportImg],
+                    ['extractPages', IconExtract],
+                    ['splitSections', IconThumbs],
+                    ['crop', IconRect],
+                    ['scale', IconFitPage],
+                    ['nup', IconSpread],
+                  ],
+                  [
+                    ['booklet', IconSpread],
+                    ['poster', IconThumbs],
+                    ['singlePage', IconSinglePage],
+                  ],
+                  [
+                    ['rotatePages', IconRotateR],
+                    ['autoRotate', IconRotateR],
+                    ['deskew', IconRotateR],
+                    ['autoRename', IconProps],
+                    ['pageNumbers', IconProps],
+                    ['scannerEffect', IconEditImage],
+                    ['scannerImageSplit', IconThumbs],
+                    ['autoSplit', IconExtract],
+                    ['removePages', IconDeletePage],
+                    ['removeImages', IconRect],
+                    ['bulkReplaceText', IconEditText],
+                    ['extractText', IconExtract],
+                    ['pdfToJson', IconExtract],
+                    ['jsonToPdf', IconExportImg],
+                    ['extractTables', IconExtract],
+                    ['extractImages', IconExportImg],
+                    ['removeAnnotations', IconHighlight],
+                    ['removeBlanks', IconDeletePage],
+                    ['invertColors', IconNight],
+                    ['replaceColors', IconDrawColor],
+                    ['adjustColors', IconEditImage],
+                    ['rearrange', IconThumbs],
+                  ],
+                  [
+                    ['redact', IconHighlight],
+                    ['comments', IconHighlight],
+                    ['compress', IconProps],
+                    ['flatten', IconSinglePage],
+                    ['forms', IconRect],
+                    ['repair', IconProps],
+                    ['decompress', IconProps],
+                    ['ocr', IconExtract],
+                    ['password', IconLock],
+                    ['certificateSign', IconProps],
+                    ['timestamp', IconProps],
+                    ['removeSignatures', IconHighlight],
+                    ['signatureAudit', IconProps],
+                    ['preflight', IconProps],
+                    ['javascriptAudit', IconProps],
+                    ['sanitize', IconProps],
+                    ['pipeline', IconProps],
+                    ['overlay', IconSpread],
+                    ['overlayImage', IconEditImage],
+                    ['filterPages', IconExtract],
+                    ['filterDocuments', IconExtract],
+                    ['attachments', IconInsertPdf],
+                    ['bookmarks', IconProps],
+                    ['metadata', IconProps],
+                    ['fontInfo', IconProps],
+                    ['annotationInfo', IconHighlight],
+                    ['securityInfo', IconLock],
+                    ['info', IconProps],
+                  ],
+                ] as const
+              ).map((tools, groupIndex) => (
+                <Fragment key={tools[0][0]}>
+                  {groupIndex > 0 && <div className="ribbon-sep" />}
+                  <div className="ribbon-group">
+                    <div className="ribbon-group-items">
+                      {tools.map(([kind, ToolIcon]) => (
+                        <button
+                          key={kind}
+                          className="rb-big"
+                          disabled={
+                            (encrypted && kind !== 'password' && kind !== 'securityInfo') ||
+                            (digitallySigned &&
+                              (kind === 'certificateSign' || kind === 'timestamp')) ||
+                            toolBusy
+                          }
+                          data-tip={pdfToolLabel(kind, lang)}
+                          aria-label={pdfToolLabel(kind, lang)}
+                          onClick={() => setToolDlg(kind)}
+                        >
+                          <span className="rb-big-icon">
+                            <ToolIcon />
+                          </span>
+                          {pdfToolLabel(kind, lang)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </Fragment>
+              ))}
             </>
           )}
         </div>
@@ -4200,7 +5331,7 @@ export default function App() {
                         e.preventDefault()
                         setThumbMenu({
                           x: Math.min(e.clientX, window.innerWidth - 190),
-                          y: Math.min(e.clientY, window.innerHeight - 190),
+                          y: Math.min(e.clientY, window.innerHeight - 280),
                           origIdx,
                         })
                       }}
@@ -4947,7 +6078,7 @@ export default function App() {
                                 alt=""
                                 data-tip={t('removeStamp')}
                                 style={{
-                                  ...pdfRectToCss(geom, s.rect, scale),
+                                  ...pdfStampToCss(geom, s.rect, s.rotation ?? 0, scale),
                                   opacity: s.opacity ?? 1,
                                 }}
                                 onClick={(e) =>
@@ -5002,6 +6133,12 @@ export default function App() {
                               onMove={readOnly ? undefined : moveDrawing}
                               onResize={readOnly ? undefined : resizeDrawing}
                             />
+                            <CommentLayer
+                              doc={doc}
+                              pageNo={origIdx + 1}
+                              geom={geom}
+                              scale={scale}
+                            />
                             <LinkLayer
                               doc={doc}
                               pageNo={origIdx + 1}
@@ -5016,9 +6153,23 @@ export default function App() {
                               scale={scale}
                               readOnly={readOnly}
                               edits={formEdits}
+                              completedSignatureFields={
+                                new Set(
+                                  drawings.flatMap((drawing) =>
+                                    drawing.sourceSignatureField
+                                      ? [drawing.sourceSignatureField]
+                                      : [],
+                                  ),
+                                )
+                              }
+                              signatureLabel={t('sign')}
                               onEdit={(v2) => {
                                 pushUndo(`form:${v2.name}`)
                                 setFormEdits((prev) => new Map(prev).set(v2.name, v2))
+                              }}
+                              onSignField={({ fieldName, rect }) => {
+                                setSignatureFieldTarget({ pageIndex: origIdx, fieldName, rect })
+                                setSignDlg(true)
                               }}
                             />
                           </>
@@ -5213,7 +6364,7 @@ export default function App() {
                 <button
                   onClick={() => {
                     setThumbMenu(null)
-                    void extractPage(menuOrig)
+                    void extractPage(menuVisibleIndex)
                   }}
                 >
                   {t('extractPage')}
@@ -5221,7 +6372,23 @@ export default function App() {
                 <button
                   onClick={() => {
                     setThumbMenu(null)
-                    void insertPdf(menuOrig)
+                    void insertBlankPage(menuVisibleIndex)
+                  }}
+                >
+                  {t('insertBlankPage')}
+                </button>
+                <button
+                  onClick={() => {
+                    setThumbMenu(null)
+                    openBlankPageDialog(menuVisibleIndex)
+                  }}
+                >
+                  {blankPageText.options}
+                </button>
+                <button
+                  onClick={() => {
+                    setThumbMenu(null)
+                    void insertPdf(menuVisibleIndex)
                   }}
                 >
                   {t('insertPdf')}
@@ -5229,7 +6396,14 @@ export default function App() {
               </div>
             )}
             {stampDlg && (
-              <StampDialog t={t} onCancel={() => setStampDlg(false)} onApply={applyStamps} />
+              <StampDialog
+                fileName={fileName}
+                totalPages={visList.length}
+                metadata={effectiveMetadata}
+                t={t}
+                onCancel={() => setStampDlg(false)}
+                onApply={applyStamps}
+              />
             )}
             {propsDlg && (
               <PropertiesDialog
@@ -5252,10 +6426,34 @@ export default function App() {
               <SignatureDialog
                 color={drawColor}
                 t={t}
-                onCancel={() => setSignDlg(false)}
+                onCancel={() => {
+                  setSignDlg(false)
+                  setSignatureFieldTarget(null)
+                }}
                 onConfirm={(sig) => {
                   setSignDlg(false)
-                  setPendingSign(sig)
+                  if (signatureFieldTarget) {
+                    pushUndo()
+                    setDrawings((previous) => [
+                      ...previous.filter(
+                        (drawing) =>
+                          drawing.sourceSignatureField !== signatureFieldTarget.fieldName,
+                      ),
+                      {
+                        id: newId(),
+                        input: signatureDrawingForField(
+                          sig,
+                          signatureFieldTarget,
+                          pageGeom(signatureFieldTarget.pageIndex),
+                          drawColor,
+                        ),
+                        sourceSignatureField: signatureFieldTarget.fieldName,
+                      },
+                    ])
+                    setSignatureFieldTarget(null)
+                  } else {
+                    setPendingSign(sig)
+                  }
                 }}
               />
             )}
@@ -5317,6 +6515,117 @@ export default function App() {
                   </div>
                 </div>
               </div>
+            )}
+            {blankPageDlg && (
+              <div className="pdf-modal-mask" onClick={() => setBlankPageDlg(false)}>
+                <div
+                  className="pdf-modal pdf-modal-wide pdf-blank-page-modal"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="pdf-modal-title">{blankPageText.title}</div>
+                  <label className="pdf-field">
+                    <span>{blankPageText.position}</span>
+                    <select
+                      className="pdf-modal-input"
+                      value={blankPagePosition}
+                      autoFocus
+                      onChange={(e) => setBlankPagePosition(e.target.value as BlankPagePosition)}
+                    >
+                      <option value="before">{blankPageText.before}</option>
+                      <option value="after">{blankPageText.after}</option>
+                      <option value="start">{blankPageText.start}</option>
+                      <option value="end">{blankPageText.end}</option>
+                    </select>
+                  </label>
+                  <label className="pdf-field">
+                    <span>{blankPageText.count}</span>
+                    <input
+                      className={`pdf-modal-input${
+                        Number.isInteger(blankPageCount) &&
+                        blankPageCount >= 1 &&
+                        blankPageCount <= 100
+                          ? ''
+                          : ' invalid'
+                      }`}
+                      type="number"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={blankPageCount}
+                      onChange={(e) => setBlankPageCount(Number(e.target.value))}
+                    />
+                  </label>
+                  <label className="pdf-field">
+                    <span>{blankPageText.size}</span>
+                    <select
+                      className="pdf-modal-input"
+                      value={blankPageSize}
+                      onChange={(e) => setBlankPageSize(e.target.value as PdfPageSize)}
+                    >
+                      <option value="KEEP">{blankPageText.match}</option>
+                      {(['A3', 'A4', 'A5', 'LETTER', 'LEGAL'] as const).map((size) => (
+                        <option key={size} value={size}>
+                          {size === 'LETTER' ? 'Letter' : size === 'LEGAL' ? 'Legal' : size}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className={`pdf-field${blankPageSize === 'KEEP' ? ' is-disabled' : ''}`}>
+                    <span>{blankPageText.orientation}</span>
+                    <div className="pdf-tools-segments">
+                      {(['portrait', 'landscape'] as const).map((orientation) => (
+                        <button
+                          key={orientation}
+                          type="button"
+                          className={`pdf-sign-tab${
+                            blankPageOrientation === orientation ? ' active' : ''
+                          }`}
+                          disabled={blankPageSize === 'KEEP'}
+                          onClick={() => setBlankPageOrientation(orientation)}
+                        >
+                          {orientation === 'portrait'
+                            ? blankPageText.portrait
+                            : blankPageText.landscape}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="pdf-modal-actions">
+                    <button className="pdf-modal-btn" onClick={() => setBlankPageDlg(false)}>
+                      {t('cancel')}
+                    </button>
+                    <button
+                      className="pdf-modal-btn primary"
+                      disabled={
+                        !Number.isInteger(blankPageCount) ||
+                        blankPageCount < 1 ||
+                        blankPageCount > 100
+                      }
+                      onClick={confirmBlankPageInsert}
+                    >
+                      {t('ok')}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+            {toolDlg && (
+              <PdfToolsDialog
+                initialKind={toolDlg}
+                filePath={filePath}
+                lang={lang}
+                currentPage={currentPage}
+                pageCount={pageCount}
+                t={t}
+                busy={toolBusy}
+                encrypted={encrypted}
+                openingPassword={passwordRef.current ?? ''}
+                ocrProgress={ocrProgress}
+                videoProgress={videoProgress}
+                onCancel={() => setToolDlg(null)}
+                onApply={(operation) => void runPdfTool(operation)}
+                onBulkReplaceText={(request) => void runBulkTextReplacement(request)}
+              />
             )}
           </div>
 

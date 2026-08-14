@@ -20,10 +20,11 @@
     "@genoffice/ai-search": "*",
     "@genoffice/electron-utils": "*",
     "@genoffice/i18n": "*",
+    "@genoffice/pdf-tools": "*",
     "@genoffice/ui": "*",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@types/pngjs": "^6.0.5",
     "@vitejs/plugin-react": "^5.0.4",
     "electron": "^43.3.0",
     "electron-vite": "^5.0.0",
@@ -39,5 +40,22 @@
     "vite-plugin-static-copy": "^3.0.0",
     "vitest": "^4.1.10"
   },
-  "author": "GenOffice"
+  "author": "GenOffice",
+  "dependencies": {
+    "@tesseract.js-data/chi_sim": "^1.0.0",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "fix-webm-duration": "^1.0.6",
+    "gifenc": "^1.0.3",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
+    "jsqr": "^1.4.0",
+    "jszip": "^3.10.1",
+    "marked": "^17.0.6",
+    "node-unrar-js": "^2.0.2",
+    "pixelmatch": "^7.2.0",
+    "postal-mime": "^3.0.0",
+    "qrcode.react": "^4.2.0",
+    "svg2pdf.js": "^2.7.0",
+    "tesseract.js": "^7.0.0"
+  }
 }

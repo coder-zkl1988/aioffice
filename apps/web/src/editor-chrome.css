@@ -32,3 +32,19 @@
   background: var(--hover, #f3f2f1);
   color: var(--text, #242424);
 }
+
+.web-pdf-editor .web-editor-back {
+  z-index: 40;
+  top: 7px;
+  right: 208px;
+  left: auto;
+}
+
+@media (max-width: 560px) {
+  .web-pdf-editor .web-editor-back {
+    top: auto;
+    right: 8px;
+    bottom: 32px;
+    left: auto;
+  }
+}

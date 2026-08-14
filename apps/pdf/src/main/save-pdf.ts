@@ -19,6 +19,10 @@ import type {
   SavePdfRequest,
   TextEditFailure,
 } from '../shared/ipc'
+import { stampDrawPlacement } from '../shared/ipc'
+import { applyPdfClassificationMetadata, removeEmptyPdfSignatureFields } from '@genoffice/pdf-tools'
+
+export { extractPagesBytes, insertBlankPageBytes, insertPdfBytes } from '@genoffice/pdf-tools'
 
 const num = (v: number) => Math.round(v * 100) / 100
 
@@ -191,7 +195,10 @@ function addDrawing(pdfDoc: PDFDocument, page: PDFPage, d: DrawingInput): void {
       P: page.ref,
     })
     annot.set(PDFName.of('Contents'), PDFHexString.fromText(d.contents))
-    annot.set(PDFName.of('T'), PDFHexString.fromText('GenOffice'))
+    annot.set(PDFName.of('T'), PDFHexString.fromText(d.author?.trim() || 'GenOffice'))
+    if (d.subject?.trim()) {
+      annot.set(PDFName.of('Subj'), PDFHexString.fromText(d.subject.trim()))
+    }
     appendAnnot(pdfDoc, page, pdfDoc.context.register(annot))
     return
   }
@@ -269,16 +276,20 @@ function addDrawing(pdfDoc: PDFDocument, page: PDFPage, d: DrawingInput): void {
 function applyFormValues(pdfDoc: PDFDocument, values: FormValueInput[]): void {
   const form = pdfDoc.getForm()
   for (const v of values) {
+    const scalarValue = Array.isArray(v.value) ? (v.value[0] ?? '') : (v.value ?? '')
     if (v.kind === 'text') {
-      form.getTextField(v.name).setText(v.value ?? '')
+      form.getTextField(v.name).setText(scalarValue)
     } else if (v.kind === 'radio') {
       const rg = form.getRadioGroup(v.name)
-      if (v.value) rg.select(v.value)
+      if (scalarValue) rg.select(scalarValue)
       else rg.clear()
     } else if (v.kind === 'choice') {
       const f = form.getField(v.name)
       if (f instanceof PDFDropdown || f instanceof PDFOptionList) {
-        if (v.value) f.select(v.value)
+        const selection = Array.isArray(v.value)
+          ? v.value.filter((value) => value.length > 0)
+          : scalarValue
+        if (Array.isArray(selection) ? selection.length > 0 : selection) f.select(selection)
         else f.clear()
       }
     } else {
@@ -287,30 +298,6 @@ function applyFormValues(pdfDoc: PDFDocument, values: FormValueInput[]): void {
       else cb.uncheck()
     }
   }
-}
-
-/** Extract the given pages (original indices) into bytes of a new PDF */
-export async function extractPagesBytes(bytes: Uint8Array, pages: number[]): Promise<Uint8Array> {
-  const src = await PDFDocument.load(bytes, { updateMetadata: false })
-  const out = await PDFDocument.create()
-  const valid = pages.filter((p) => p >= 0 && p < src.getPageCount())
-  const copied = await out.copyPages(src, valid)
-  for (const p of copied) out.addPage(p)
-  return out.save({ useObjectStreams: false })
-}
-
-/** Insert all pages of another PDF after afterPageIndex (-1 = front); returns merged bytes and inserted page count */
-export async function insertPdfBytes(
-  bytes: Uint8Array,
-  otherBytes: Uint8Array,
-  afterPageIndex: number,
-): Promise<{ merged: Uint8Array; count: number }> {
-  const dst = await PDFDocument.load(bytes, { updateMetadata: false })
-  const src = await PDFDocument.load(otherBytes, { updateMetadata: false })
-  const copied = await dst.copyPages(src, src.getPageIndices())
-  let at = Math.min(Math.max(afterPageIndex + 1, 0), dst.getPageCount())
-  for (const p of copied) dst.insertPage(at++, p)
-  return { merged: await dst.save({ useObjectStreams: false }), count: copied.length }
 }
 
 function applyMetadata(pdfDoc: PDFDocument, meta: MetadataInput): void {
@@ -448,6 +435,7 @@ export async function applySaveRequest(
   }
   const pdfDoc = await PDFDocument.load(bytes, { updateMetadata: false })
   if (request.formValues.length > 0) applyFormValues(pdfDoc, request.formValues)
+  removeEmptyPdfSignatureFields(pdfDoc, request.removeSignatureFields ?? [])
   const pages = pdfDoc.getPages()
   // Apply rotations first so markup appearances draw lines for the page's final orientation
   for (const r of request.rotations ?? []) {
@@ -464,20 +452,29 @@ export async function applySaveRequest(
     if (d.kind === 'image') await addImageStamp(pdfDoc, page, d)
     else addDrawing(pdfDoc, page, d)
   }
+  const stampImageCache = new Map<string, Awaited<ReturnType<PDFDocument['embedPng']>>>()
   for (const s of request.stamps ?? []) {
     const page = pages[s.pageIndex]
     if (!page) continue
-    const png = await pdfDoc.embedPng(s.image)
-    const [x1, y1, x2, y2] = s.rect
+    const image = s.image || request.stampImages?.[s.imageIndex ?? -1]
+    if (!image) continue
+    let png = stampImageCache.get(image)
+    if (!png) {
+      png = await pdfDoc.embedPng(image)
+      stampImageCache.set(image, png)
+    }
+    const placement = stampDrawPlacement(s.rect, s.rotation)
     page.drawImage(png, {
-      x: x1,
-      y: y1,
-      width: x2 - x1,
-      height: y2 - y1,
+      x: placement.x,
+      y: placement.y,
+      width: placement.width,
+      height: placement.height,
       opacity: s.opacity ?? 1,
+      rotate: degrees(placement.rotation),
     })
   }
   if (request.metadata) applyMetadata(pdfDoc, request.metadata)
+  if (request.classification) applyPdfClassificationMetadata(pdfDoc, request.classification)
   // Deletions go last, in descending order; earlier ops all address original page indices
   for (const idx of [...(request.deletedPages ?? [])].sort((a, b) => b - a)) {
     if (idx >= 0 && idx < pdfDoc.getPageCount() && pdfDoc.getPageCount() > 1) pdfDoc.removePage(idx)

@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { validateProviderBaseUrl, validatePublicResourceUrl } from './security'
+import {
+  validateProviderBaseUrl,
+  validatePublicResourceUrl,
+  webContentSecurityPolicy,
+} from './security'
+
+describe('webContentSecurityPolicy', () => {
+  it('permits WebAssembly compilation without permitting JavaScript eval', () => {
+    expect(webContentSecurityPolicy).toContain("script-src 'self' 'wasm-unsafe-eval'")
+    expect(webContentSecurityPolicy).not.toMatch(/(?:^|\s)'unsafe-eval'(?:;|\s|$)/)
+  })
+})
 
 describe('validateProviderBaseUrl', () => {
   it('accepts a public HTTPS API URL', async () => {

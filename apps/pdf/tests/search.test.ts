@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
-import { buildSearchIndex, searchInIndex, type SearchIndex } from '../src/renderer/search'
+import {
+  buildSearchIndex,
+  planBulkTextReplacements,
+  searchInIndex,
+  searchPatternsInIndex,
+  type SearchIndex,
+} from '../src/renderer/search'
 
 interface FakeItem {
   str?: string
@@ -67,7 +73,7 @@ describe('buildSearchIndex', () => {
     ])
     const index = await buildSearchIndex(doc)
     expect(index[0]!.items[0]!.rot).toBeUndefined()
-    expect(index[0]!.items[1]!.rot).toBe(true)
+    expect(index[0]!.items[1]).toMatchObject({ rot: true, ux: 0, uy: 1 })
   })
 
   it('synthetic italic shear (c ≠ 0, horizontal baseline) is not flagged as rotated', async () => {
@@ -148,5 +154,123 @@ describe('searchInIndex', () => {
     const text = 'a'.repeat(2000)
     const index = [entry(text, [{ start: 0, end: 2000, x: 0, y: 0, w: 2000, h: 10 }])]
     expect(searchInIndex(index, 'a')).toHaveLength(1000)
+  })
+})
+
+describe('searchPatternsInIndex', () => {
+  const entry = (text: string, items: SearchIndex[number]['items']): SearchIndex[number] => ({
+    text,
+    lower: text.toLowerCase(),
+    items,
+  })
+
+  it('matches multiple literal patterns case-insensitively across text items', () => {
+    const index = [
+      entry('Account 123 SECRET', [
+        { start: 0, end: 8, x: 0, y: 0, w: 80, h: 10 },
+        { start: 8, end: 18, x: 80, y: 0, w: 100, h: 10 },
+      ]),
+    ]
+    const matches = searchPatternsInIndex(index, ['account 123', 'secret'], false, false)
+    expect(matches).toHaveLength(2)
+    expect(matches[0]!.rects).toHaveLength(2)
+    expect(matches[1]!.rects).toEqual([[80, 0, 180, 10]])
+  })
+
+  it('supports regular expressions and whole-word matching', () => {
+    const index = [
+      entry('ID-123 ID-999 identity', [{ start: 0, end: 22, x: 0, y: 0, w: 220, h: 10 }]),
+    ]
+    expect(searchPatternsInIndex(index, ['ID-\\d{3}'], true, false)).toHaveLength(2)
+    expect(searchPatternsInIndex(index, ['ID'], false, true)).toHaveLength(2)
+    expect(searchPatternsInIndex(index, ['ident'], false, true)).toEqual([])
+  })
+
+  it('ignores blank patterns', () => {
+    const index = [entry('secret', [{ start: 0, end: 6, x: 0, y: 0, w: 60, h: 10 }])]
+    expect(searchPatternsInIndex(index, [' ', ''], false, false)).toEqual([])
+  })
+
+  it('uses the complete text item and rotation-aware bounds to avoid partial leaks', () => {
+    const index = [
+      entry('secret', [
+        { start: 0, end: 6, x: 100, y: 200, w: 60, h: 12, rot: true, ux: 0, uy: 1 },
+      ]),
+    ]
+    expect(searchPatternsInIndex(index, ['cret'], false, false)[0]!.rects).toEqual([
+      [88, 200, 100, 260],
+    ])
+  })
+})
+
+describe('planBulkTextReplacements', () => {
+  const entry = (text: string, items: SearchIndex[number]['items']): SearchIndex[number] => ({
+    text,
+    lower: text.toLowerCase(),
+    items,
+  })
+
+  it('applies ordered rules so later replacements see earlier results', () => {
+    const index = [entry('foo', [{ start: 0, end: 3, x: 10, y: 20, w: 30, h: 12 }])]
+    const plan = planBulkTextReplacements(
+      index,
+      [
+        { find: 'foo', replace: 'foos' },
+        { find: 'foos', replace: 'bars' },
+      ],
+      [0],
+      { caseSensitive: true, wholeWord: false },
+    )
+    expect(plan.matchCount).toBe(2)
+    expect(plan.edits).toEqual([
+      {
+        pageIndex: 0,
+        rect: [10, 20, 40, 32],
+        oldText: 'foo',
+        newText: 'bars',
+        fontSize: 12,
+        allowEmpty: true,
+      },
+    ])
+  })
+
+  it('coalesces multiple hits sharing one PDF text item', () => {
+    const index = [entry('foo and foo', [{ start: 0, end: 11, x: 0, y: 0, w: 110, h: 10 }])]
+    const plan = planBulkTextReplacements(index, [{ find: 'foo', replace: 'bar' }], [0], {
+      caseSensitive: true,
+      wholeWord: false,
+    })
+    expect(plan.matchCount).toBe(2)
+    expect(plan.edits).toHaveLength(1)
+    expect(plan.edits[0]).toMatchObject({ oldText: 'foo and foo', newText: 'bar and bar' })
+  })
+
+  it('matches across text items and supports empty replacements', () => {
+    const index = [
+      entry('Hello World', [
+        { start: 0, end: 6, x: 0, y: 50, w: 60, h: 10 },
+        { start: 6, end: 11, x: 60, y: 50, w: 50, h: 10 },
+      ]),
+    ]
+    const plan = planBulkTextReplacements(index, [{ find: 'lo Wo', replace: '' }], [0], {
+      caseSensitive: true,
+      wholeWord: false,
+    })
+    expect(plan.edits).toHaveLength(1)
+    expect(plan.edits[0]).toMatchObject({ oldText: 'lo Wo', newText: '', allowEmpty: true })
+    expect(plan.edits[0]!.rect).toEqual([30, 50, 80, 60])
+  })
+
+  it('supports match case, ASCII whole words, and selected pages', () => {
+    const make = (text: string) =>
+      entry(text, [{ start: 0, end: text.length, x: 0, y: 0, w: text.length * 10, h: 10 }])
+    const index = [make('cat catalog Cat'), make('cat')]
+    const plan = planBulkTextReplacements(index, [{ find: 'cat', replace: 'dog' }], [0], {
+      caseSensitive: true,
+      wholeWord: true,
+    })
+    expect(plan.matchCount).toBe(1)
+    expect(plan.edits).toHaveLength(1)
+    expect(plan.edits[0]).toMatchObject({ pageIndex: 0, oldText: 'cat', newText: 'dog' })
   })
 })

@@ -23,9 +23,26 @@ import {
   renderPagePreviewPng,
 } from '../../pdf/src/main/image-edit'
 import { applyTextEdits, listEditFonts, validateTextEdits } from '../../pdf/src/main/text-edit'
-import type { ImageEditInput, PagePreviewRequest, TextEditInput } from '../../pdf/src/shared/ipc'
+import { requestPdfTimestampToken } from '../../pdf/src/main/timestamp'
+import { fetchPdfWebResource } from '../../pdf/src/main/web-resource'
+import {
+  handleMobileScannerPublicRequest,
+  MobileScannerError,
+  MobileScannerHub,
+} from '../../pdf/src/main/mobile-scanner'
+import { isPdfMobileScannerSessionId } from '../../pdf/src/shared/mobile-scanner'
+import type {
+  ImageEditInput,
+  PagePreviewRequest,
+  PdfWebResourceRequest,
+  TextEditInput,
+} from '../../pdf/src/shared/ipc'
 import { normalizeProviderModels } from './ai-models'
-import { validateProviderBaseUrl, validatePublicResourceUrl } from './security'
+import {
+  validateProviderBaseUrl,
+  validatePublicResourceUrl,
+  webContentSecurityPolicy,
+} from './security'
 import { SheetsWebService } from './sheets'
 import { SlidesWebService } from './slides'
 
@@ -46,6 +63,7 @@ const slidesService = new SlidesWebService(
 const maxRemoteImageBytes = Number(process.env.WEB_MAX_REMOTE_IMAGE_BYTES || 20 * 1024 * 1024)
 const maxAttachmentBytes = Number(process.env.WEB_MAX_ATTACHMENT_BYTES || 50 * 1024 * 1024)
 const attachmentTextCache = new Map<string, string>()
+const mobileScannerHub = new MobileScannerHub()
 const attachmentTextExtensions = new Set([
   'txt',
   'md',
@@ -101,11 +119,8 @@ function normalizeBasePath(value: string): string {
 function applySecurityHeaders(response: ServerResponse): void {
   response.setHeader('X-Content-Type-Options', 'nosniff')
   response.setHeader('Referrer-Policy', 'same-origin')
-  response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
-  response.setHeader(
-    'Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'",
-  )
+  response.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()')
+  response.setHeader('Content-Security-Policy', webContentSecurityPolicy)
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {
@@ -180,6 +195,22 @@ async function handleAttachmentText(
     text: text.slice(offset, offset + maxChars),
     offset,
   })
+}
+
+async function handlePdfTimestampToken(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  const body = await readJson<{ tsaUrl?: unknown; requestBase64?: unknown }>(request)
+  if (typeof body.tsaUrl !== 'string' || typeof body.requestBase64 !== 'string') {
+    throw new Error('时间戳请求无效')
+  }
+  if (body.requestBase64.length === 0 || body.requestBase64.length > 96 * 1024) {
+    throw new Error('时间戳请求为空或过大')
+  }
+  const requestBytes = Uint8Array.from(Buffer.from(body.requestBase64, 'base64'))
+  const timestamp = await requestPdfTimestampToken(body.tsaUrl, requestBytes)
+  json(response, 200, { ok: true, responseBase64: Buffer.from(timestamp).toString('base64') })
 }
 
 async function customConfig(settings: AiStreamRequest['settings']): Promise<AiProviderConfig> {
@@ -809,6 +840,58 @@ const server = createServer(async (request, response) => {
     }
     const pathname = requestPath(url)
     if (pathname === null) return json(response, 404, { error: 'Not found' })
+    if (
+      await handleMobileScannerPublicRequest({
+        request,
+        response,
+        pathname,
+        url,
+        hub: mobileScannerHub,
+        clientBasePath: basePath,
+      })
+    ) {
+      return
+    }
+    if (request.method === 'POST' && pathname === '/api/pdf/mobile-scanner/session') {
+      if (request.headers['x-genoffice-client'] !== 'pdf') {
+        return json(response, 403, { error: 'Forbidden' })
+      }
+      try {
+        const session = mobileScannerHub.createSession()
+        const prefix = basePath === '/' ? '' : basePath
+        return json(response, 200, {
+          ...session,
+          uploadPath: `${prefix}/mobile-scanner/${session.sessionId}`,
+        })
+      } catch (error) {
+        return json(response, error instanceof MobileScannerError ? error.status : 400, {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    if (request.method === 'POST' && pathname === '/api/pdf/mobile-scanner/poll') {
+      if (request.headers['x-genoffice-client'] !== 'pdf') {
+        return json(response, 403, { error: 'Forbidden' })
+      }
+      const body = await readJson<{ sessionId?: unknown }>(request)
+      if (!isPdfMobileScannerSessionId(body.sessionId)) throw new Error('扫码会话无效')
+      const result = mobileScannerHub.takeFiles(body.sessionId)
+      return json(response, 200, {
+        expiresAt: result.expiresAt,
+        files: result.files.map(({ bytes, ...file }) => ({
+          ...file,
+          base64: Buffer.from(bytes).toString('base64'),
+        })),
+      })
+    }
+    if (request.method === 'POST' && pathname === '/api/pdf/mobile-scanner/close') {
+      if (request.headers['x-genoffice-client'] !== 'pdf') {
+        return json(response, 403, { error: 'Forbidden' })
+      }
+      const body = await readJson<{ sessionId?: unknown }>(request)
+      if (isPdfMobileScannerSessionId(body.sessionId)) mobileScannerHub.closeSession(body.sessionId)
+      return json(response, 200, { ok: true })
+    }
     if (request.method === 'POST' && pathname === '/api/ai/models') {
       return await handleModels(request, response)
     }
@@ -857,6 +940,17 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === 'POST' && pathname === '/api/pdf/text/apply') {
       return await handlePdfTextApply(request, response)
+    }
+    if (request.method === 'POST' && pathname === '/api/pdf/timestamp-token') {
+      return await handlePdfTimestampToken(request, response)
+    }
+    if (request.method === 'POST' && pathname === '/api/pdf/web-resource') {
+      const resource = await fetchPdfWebResource(await readJson<PdfWebResourceRequest>(request))
+      return json(response, 200, {
+        url: resource.url,
+        contentType: resource.contentType,
+        base64: Buffer.from(resource.bytes).toString('base64'),
+      })
     }
     if (request.method === 'GET' && pathname === '/api/pdf/fonts') {
       return json(response, 200, { fonts: listEditFonts() })

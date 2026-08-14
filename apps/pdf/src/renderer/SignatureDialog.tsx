@@ -2,6 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, PointerEvent as ReactPointerEvent, ReactElement } from 'react'
 import { cssRgb } from './DrawLayer'
 import type { TFunc } from './i18n/locale'
+import {
+  deleteSavedSignature,
+  listSavedSignatures,
+  saveSignature,
+  SignatureLibraryError,
+  type SavedSignature,
+} from './signature-library'
 
 const PAD_W = 420
 const PAD_H = 150
@@ -122,6 +129,43 @@ function textToImage(
     : null
 }
 
+function SignaturePreview({
+  signature,
+  color,
+}: {
+  signature: SignatureData
+  color: [number, number, number]
+}): ReactElement {
+  if (signature.kind === 'image') {
+    return <img src={`data:image/png;base64,${signature.image}`} alt="" />
+  }
+  return (
+    <svg
+      viewBox={`0 0 ${signature.width} ${signature.height}`}
+      preserveAspectRatio="xMidYMid meet"
+      aria-hidden="true"
+    >
+      {signature.paths.map((path, index) => {
+        const points: string[] = []
+        for (let offset = 0; offset < path.length; offset += 2) {
+          points.push(`${path[offset]},${path[offset + 1]}`)
+        }
+        return (
+          <polyline
+            key={index}
+            points={points.join(' ')}
+            fill="none"
+            stroke={cssRgb(color)}
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        )
+      })}
+    </svg>
+  )
+}
+
 /** Signature dialog: draw on a pad, type text, or upload an image; confirming enters placement mode */
 export function SignatureDialog({
   color,
@@ -139,6 +183,12 @@ export function SignatureDialog({
   const [fontIdx, setFontIdx] = useState(0)
   const [imgCanvas, setImgCanvas] = useState<HTMLCanvasElement | null>(null)
   const [bw, setBw] = useState(false)
+  const [drawnPathCount, setDrawnPathCount] = useState(0)
+  const [savedSignatures, setSavedSignatures] = useState<SavedSignature[]>([])
+  const [libraryLoaded, setLibraryLoaded] = useState(false)
+  const [libraryError, setLibraryError] = useState<'limit' | 'storage' | null>(null)
+  const [signatureLabel, setSignatureLabel] = useState('')
+  const [savingSignature, setSavingSignature] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const pathsRef = useRef<number[][]>([])
@@ -150,6 +200,23 @@ export function SignatureDialog({
     const canvas = bw ? toBlackAndWhite(imgCanvas) : imgCanvas
     return { canvas, url: canvas.toDataURL('image/png') }
   }, [imgCanvas, bw])
+
+  useEffect(() => {
+    let active = true
+    void listSavedSignatures()
+      .then((items) => {
+        if (active) setSavedSignatures(items)
+      })
+      .catch(() => {
+        if (active) setLibraryError('storage')
+      })
+      .finally(() => {
+        if (active) setLibraryLoaded(true)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   const pickImage = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -180,7 +247,10 @@ export function SignatureDialog({
 
   const pos = (e: ReactPointerEvent): [number, number] => {
     const box = e.currentTarget.getBoundingClientRect()
-    return [e.clientX - box.left, e.clientY - box.top]
+    return [
+      ((e.clientX - box.left) * PAD_W) / Math.max(box.width, 1),
+      ((e.clientY - box.top) * PAD_H) / Math.max(box.height, 1),
+    ]
   }
 
   const down = (e: ReactPointerEvent) => {
@@ -195,46 +265,121 @@ export function SignatureDialog({
     redraw()
   }
   const up = () => {
+    if (curRef.current && curRef.current.length >= 4) {
+      setDrawnPathCount(pathsRef.current.filter((path) => path.length >= 4).length)
+    }
     curRef.current = null
   }
 
   const clear = () => {
     pathsRef.current = []
+    setDrawnPathCount(0)
     redraw()
   }
 
-  const confirm = () => {
+  const currentSignature = (): SignatureData | null => {
     if (mode === 'draw') {
       const paths = pathsRef.current.filter((p) => p.length >= 4)
-      if (paths.length > 0) onConfirm({ kind: 'strokes', paths, width: PAD_W, height: PAD_H })
-      return
+      return paths.length > 0 ? { kind: 'strokes', paths, width: PAD_W, height: PAD_H } : null
     }
     if (mode === 'image') {
-      if (!processedImg) return
+      if (!processedImg) return null
       const base64 = processedImg.canvas.toDataURL('image/png').split(',')[1]
-      if (base64) {
-        onConfirm({
-          kind: 'image',
-          image: base64,
-          width: processedImg.canvas.width,
-          height: processedImg.canvas.height,
-        })
-      }
-      return
+      return base64
+        ? {
+            kind: 'image',
+            image: base64,
+            width: processedImg.canvas.width,
+            height: processedImg.canvas.height,
+          }
+        : null
     }
     const text = typed.trim()
-    if (!text) return
-    const sig = textToImage(text, SIGN_FONTS[fontIdx] ?? SIGN_FONTS[0]!, color)
-    if (sig) onConfirm(sig)
+    return text ? textToImage(text, SIGN_FONTS[fontIdx] ?? SIGN_FONTS[0]!, color) : null
+  }
+
+  const confirm = () => {
+    const signature = currentSignature()
+    if (signature) onConfirm(signature)
+  }
+
+  const saveCurrentSignature = async () => {
+    const signature = currentSignature()
+    const label = signatureLabel.trim()
+    if (!signature || !label || savingSignature) return
+    setSavingSignature(true)
+    setLibraryError(null)
+    try {
+      const saved = await saveSignature(label, signature)
+      setSavedSignatures((items) => [saved, ...items])
+      setSignatureLabel('')
+    } catch (error) {
+      setLibraryError(
+        error instanceof SignatureLibraryError && error.code !== 'storage' ? 'limit' : 'storage',
+      )
+    } finally {
+      setSavingSignature(false)
+    }
+  }
+
+  const removeSavedSignature = async (id: string) => {
+    setLibraryError(null)
+    try {
+      await deleteSavedSignature(id)
+      setSavedSignatures((items) => items.filter((item) => item.id !== id))
+    } catch {
+      setLibraryError('storage')
+    }
   }
 
   const canConfirm =
-    mode === 'draw' || (mode === 'image' ? processedImg !== null : typed.trim().length > 0)
+    mode === 'draw'
+      ? drawnPathCount > 0
+      : mode === 'image'
+        ? processedImg !== null
+        : typed.trim().length > 0
 
   return (
     <div className="pdf-modal-mask" onClick={onCancel}>
-      <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="pdf-modal pdf-sign-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="pdf-modal-title">{t('signTitle')}</div>
+        <section className="pdf-sign-library" aria-label={t('signSaved')}>
+          <div className="pdf-sign-library-title">{t('signSaved')}</div>
+          {savedSignatures.length > 0 ? (
+            <div className="pdf-sign-library-grid">
+              {savedSignatures.map((saved) => (
+                <div className="pdf-sign-library-card" key={saved.id}>
+                  <button
+                    className="pdf-sign-library-use"
+                    title={`${t('signPlace')}: ${saved.label}`}
+                    onClick={() => onConfirm(saved.data)}
+                  >
+                    <span className="pdf-sign-library-preview">
+                      <SignaturePreview signature={saved.data} color={color} />
+                    </span>
+                    <span className="pdf-sign-library-label">{saved.label}</span>
+                  </button>
+                  <button
+                    className="pdf-sign-library-delete"
+                    title={t('deleteAnnotation')}
+                    aria-label={`${t('deleteAnnotation')}: ${saved.label}`}
+                    onClick={() => void removeSavedSignature(saved.id)}
+                  >
+                    <span aria-hidden="true">&times;</span>
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            libraryLoaded &&
+            !libraryError && <div className="pdf-sign-library-empty">{t('signLibraryEmpty')}</div>
+          )}
+          {libraryError && (
+            <div className="pdf-sign-library-error" role="status">
+              {t(libraryError === 'limit' ? 'signLibraryLimit' : 'signStorageError')}
+            </div>
+          )}
+        </section>
         <div className="pdf-sign-tabs">
           <button
             className={`pdf-sign-tab${mode === 'draw' ? ' active' : ''}`}
@@ -328,6 +473,25 @@ export function SignatureDialog({
             </label>
           </>
         )}
+        <div className="pdf-sign-save-row">
+          <input
+            className="pdf-modal-input"
+            value={signatureLabel}
+            maxLength={80}
+            placeholder={t('signLabelPlaceholder')}
+            onChange={(event) => setSignatureLabel(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void saveCurrentSignature()
+            }}
+          />
+          <button
+            className="pdf-modal-btn"
+            disabled={!canConfirm || !signatureLabel.trim() || savingSignature}
+            onClick={() => void saveCurrentSignature()}
+          >
+            {t('save')}
+          </button>
+        </div>
         <div className="pdf-modal-actions">
           {mode === 'draw' && (
             <button className="pdf-modal-btn" onClick={clear}>

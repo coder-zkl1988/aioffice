@@ -3,18 +3,25 @@ import type { Lang } from '@genoffice/i18n'
 import type { AiStreamChunk } from '@genoffice/ai-provider'
 import { AI_CHANNELS, PDF_CHANNELS } from '../shared/ipc'
 import type { PdfApi, UiTheme } from '../shared/ipc'
+import { PDF_MOBILE_SCANNER_CHANNELS } from '../shared/mobile-scanner'
+import type { PdfMobileScannerApi } from '../shared/mobile-scanner'
 
 const api: PdfApi = {
   consumePending: () => ipcRenderer.invoke(PDF_CHANNELS.consumePending),
   readFile: (path) => ipcRenderer.invoke(PDF_CHANNELS.readFile, path),
   save: (request) => ipcRenderer.invoke(PDF_CHANNELS.save, request),
   validateTextEdits: (request) => ipcRenderer.invoke(PDF_CHANNELS.validateTextEdits, request),
+  bulkReplaceText: (request) => ipcRenderer.invoke(PDF_CHANNELS.bulkReplaceText, request),
   listEditFonts: () => ipcRenderer.invoke(PDF_CHANNELS.listEditFonts),
   listPageImages: (path) => ipcRenderer.invoke(PDF_CHANNELS.listPageImages, path),
   pageImagePng: (request) => ipcRenderer.invoke(PDF_CHANNELS.pageImagePng, request),
   pagePreviewPng: (request) => ipcRenderer.invoke(PDF_CHANNELS.pagePreviewPng, request),
   extractPages: (request) => ipcRenderer.invoke(PDF_CHANNELS.extractPages, request),
   insertPdf: (request) => ipcRenderer.invoke(PDF_CHANNELS.insertPdf, request),
+  insertBlankPage: (request) => ipcRenderer.invoke(PDF_CHANNELS.insertBlankPage, request),
+  runTool: (request) => ipcRenderer.invoke(PDF_CHANNELS.runTool, request),
+  fetchWebResource: (request) => ipcRenderer.invoke(PDF_CHANNELS.fetchWebResource, request),
+  requestTimestampToken: (request) => ipcRenderer.invoke(PDF_CHANNELS.timestampToken, request),
   exportImages: (request) => ipcRenderer.invoke(PDF_CHANNELS.exportImages, request),
   imageSearch: (query, maxResults) =>
     ipcRenderer.invoke(AI_CHANNELS.imageSearch, query, maxResults),
@@ -61,3 +68,13 @@ const api: PdfApi = {
 }
 
 contextBridge.exposeInMainWorld('pdfApi', api)
+
+const mobileScannerApi: PdfMobileScannerApi = {
+  createSession: () => ipcRenderer.invoke(PDF_MOBILE_SCANNER_CHANNELS.createSession),
+  pollSession: (sessionId) =>
+    ipcRenderer.invoke(PDF_MOBILE_SCANNER_CHANNELS.pollSession, sessionId),
+  closeSession: (sessionId) =>
+    ipcRenderer.invoke(PDF_MOBILE_SCANNER_CHANNELS.closeSession, sessionId),
+}
+
+contextBridge.exposeInMainWorld('pdfMobileScanner', mobileScannerApi)

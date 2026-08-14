@@ -1,17 +1,27 @@
 import type { Lang } from '@genoffice/i18n'
 import type { AiSettings, AiStreamChunk, AiStreamRequest } from '@genoffice/ai-provider'
+import type {
+  InsertBlankPageOptions,
+  PdfClassificationMetadata,
+  PdfToolOperation,
+} from '@genoffice/pdf-tools'
 
 export const PDF_CHANNELS = {
   consumePending: 'pdf:consume-pending',
   readFile: 'pdf:read-file',
   save: 'pdf:save',
   validateTextEdits: 'pdf:validate-text-edits',
+  bulkReplaceText: 'pdf:bulk-replace-text',
   listEditFonts: 'pdf:list-edit-fonts',
   listPageImages: 'pdf:list-page-images',
   pageImagePng: 'pdf:page-image-png',
   pagePreviewPng: 'pdf:page-preview-png',
   extractPages: 'pdf:extract-pages',
   insertPdf: 'pdf:insert-pdf',
+  insertBlankPage: 'pdf:insert-blank-page',
+  runTool: 'pdf:run-tool',
+  fetchWebResource: 'pdf:fetch-web-resource',
+  timestampToken: 'pdf:timestamp-token',
   exportImages: 'pdf:export-images',
   generateImage: 'pdf:generate-image',
   dirtyChanged: 'pdf:dirty-changed',
@@ -72,20 +82,46 @@ export type DrawingInput =
       color: [number, number, number]
       at: [number, number]
       contents: string
+      author?: string
+      subject?: string
     }
 
 /**
  * Stamp layer (watermark/header/footer/page numbers all go through it).
- * The renderer rasterizes the bitmap via canvas (with rotation and fonts, bypassing
- * pdf-lib's lack of CJK support); the main process only embeds and positions it.
+ * The renderer rasterizes the bitmap via canvas (bypassing pdf-lib's lack of CJK
+ * support); the save layer embeds, positions, and center-rotates it.
  */
 export interface StampInput {
   pageIndex: number
-  /** base64 PNG, without the data: prefix */
+  /** base64 PNG, without the data: prefix; may be empty when imageIndex is set */
   image: string
   /** PDF user space [x1,y1,x2,y2] */
   rect: [number, number, number, number]
   opacity?: number
+  /** Counterclockwise rotation around the center of rect */
+  rotation?: number
+  /** Optional index into SavePdfRequest.stampImages; used to deduplicate save payloads */
+  imageIndex?: number
+}
+
+/** Convert a center-rotated stamp rect to pdf-lib's lower-left rotation origin. */
+export function stampDrawPlacement(
+  rect: StampInput['rect'],
+  rotation = 0,
+): { x: number; y: number; width: number; height: number; rotation: number } {
+  const [x1, y1, x2, y2] = rect
+  const width = x2 - x1
+  const height = y2 - y1
+  const radians = (rotation * Math.PI) / 180
+  const centerX = (x1 + x2) / 2
+  const centerY = (y1 + y2) / 2
+  return {
+    x: centerX - (width * Math.cos(radians) - height * Math.sin(radians)) / 2,
+    y: centerY - (width * Math.sin(radians) + height * Math.cos(radians)) / 2,
+    width,
+    height,
+    rotation,
+  }
 }
 
 /** Document info; an empty string clears the field */
@@ -109,6 +145,8 @@ export interface TextEditInput {
   oldText: string
   /** Replacement; '\n' splits it into stacked lines (one text object per line) */
   newText: string
+  /** Explicit bulk-replacement operation may remove the matched run entirely. */
+  allowEmpty?: boolean
   /** Original run's font size in PDF pt (fallback sizing for the rebuilt object) */
   fontSize: number
   /** User-chosen size in PDF pt; absent = keep the original run's size */
@@ -261,8 +299,8 @@ export interface ImageEditFailure {
 export interface FormValueInput {
   name: string
   kind: 'text' | 'checkbox' | 'radio' | 'choice'
-  /** For radio: selected exportValue; for choice: selected option; empty string clears selection */
-  value?: string
+  /** For radio: selected exportValue; for choice: one or more selected options; empty clears selection */
+  value?: string | string[]
   checked?: boolean
 }
 
@@ -276,8 +314,12 @@ export interface SavePdfRequest {
   targetPath?: string
   markups: MarkupInput[]
   drawings: DrawingInput[]
+  /** Empty AcroForm signature fields replaced by wet signatures in `drawings`. */
+  removeSignatureFields?: string[]
   formValues: FormValueInput[]
   stamps: StampInput[]
+  /** Deduplicated stamp PNGs referenced by StampInput.imageIndex */
+  stampImages?: string[]
   /** Applied to the source bytes before all annotation work — these rewrite page content streams */
   textEdits?: TextEditInput[]
   /** Content-stream image operations, applied right after textEdits (same pdfium stage) */
@@ -289,6 +331,8 @@ export interface SavePdfRequest {
   /** New page order (array of original page indices, excluding deleted); omitted if unreordered */
   pageOrder?: number[]
   metadata?: MetadataInput
+  /** GenOffice-owned document labels; stored in a dedicated custom PDF Info key */
+  classification?: PdfClassificationMetadata
 }
 
 /** A text edit that could not be matched to the document at save time and was skipped */
@@ -307,6 +351,17 @@ export interface ValidateTextEditsRequest {
   path: string
   edits: TextEditInput[]
 }
+
+export interface BulkReplaceTextRequest {
+  path: string
+  suggestedName: string
+  edits: TextEditInput[]
+}
+
+export type BulkReplaceTextResult =
+  | { ok: true; savedPath: string; appliedCount: number; skipped: TextEditFailure[] }
+  | { ok: true; canceled: true }
+  | { ok: false; error: string }
 
 /** Extract pages into a new PDF: main process shows a save dialog; cancel returns canceled */
 export interface ExtractPagesRequest {
@@ -328,6 +383,31 @@ export interface InsertPdfRequest {
 
 export type InsertPdfResult =
   { ok: true; insertedCount: number } | { ok: true; canceled: true } | { ok: false; error: string }
+
+export interface InsertBlankPageRequest extends InsertBlankPageOptions {
+  path: string
+  /** Insert after this original page index; -1 means front of the document */
+  afterPageIndex: number
+}
+
+export type InsertBlankPageResult =
+  { ok: true; insertedCount: number } | { ok: false; error: string }
+
+export interface RunPdfToolRequest {
+  path: string
+  baseName: string
+  operation: PdfToolOperation
+}
+
+export interface PdfTimestampTokenRequest {
+  tsaUrl: string
+  request: Uint8Array
+}
+
+export type RunPdfToolResult =
+  | { ok: true; savedPath: string; count: number }
+  | { ok: true; canceled: true }
+  | { ok: false; error: string }
 
 /** Export pages as PNG: renderer rasterizes the bitmaps, main process shows a dialog and writes to disk */
 export interface ExportImagesRequest {
@@ -367,6 +447,19 @@ export interface ImageSearchResponse {
   error?: string
 }
 
+export type PdfWebResourceKind = 'document' | 'stylesheet' | 'image'
+
+export interface PdfWebResourceRequest {
+  url: string
+  kind: PdfWebResourceKind
+}
+
+export interface PdfWebResourceResult {
+  url: string
+  contentType: string
+  bytes: Uint8Array
+}
+
 /** API exposed by preload to the renderer (window.pdfApi) */
 export interface PdfApi {
   /** Take the pdf path pending for this view (queued at tab creation); null if none */
@@ -377,6 +470,8 @@ export interface PdfApi {
   save(request: SavePdfRequest): Promise<SavePdfResult>
   /** Dry-run match of pending text edits against the file: reason null = would apply */
   validateTextEdits(request: ValidateTextEditsRequest): Promise<TextEditValidation[]>
+  /** Apply planned bulk replacements to a new PDF copy. */
+  bulkReplaceText(request: BulkReplaceTextRequest): Promise<BulkReplaceTextResult>
   /** EDIT_FONTS ids whose font file exists on this machine */
   listEditFonts(): Promise<string[]>
   /** Enumerate the content-stream images of every page (for image edit mode) */
@@ -392,6 +487,11 @@ export interface PdfApi {
   pagePreviewPng(request: PagePreviewRequest): Promise<string | null>
   extractPages(request: ExtractPagesRequest): Promise<ExtractPagesResult>
   insertPdf(request: InsertPdfRequest): Promise<InsertPdfResult>
+  insertBlankPage(request: InsertBlankPageRequest): Promise<InsertBlankPageResult>
+  runTool(request: RunPdfToolRequest): Promise<RunPdfToolResult>
+  /** Fetch public website content without exposing browser CORS or private-network access. */
+  fetchWebResource(request: PdfWebResourceRequest): Promise<PdfWebResourceResult>
+  requestTimestampToken(request: PdfTimestampTokenRequest): Promise<Uint8Array>
   exportImages(request: ExportImagesRequest): Promise<ExportImagesResult>
   /** Web image search for AI tools (app-wide ai:image-search handler) */
   imageSearch(query: string, maxResults?: number): Promise<ImageSearchResponse>

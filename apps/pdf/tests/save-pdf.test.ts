@@ -3,10 +3,20 @@ import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { PDFArray, PDFDict, PDFDocument, PDFName } from 'pdf-lib'
+import {
+  PDFArray,
+  PDFDict,
+  PDFDocument,
+  PDFHexString,
+  PDFName,
+  PDFWidgetAnnotation,
+  degrees,
+} from 'pdf-lib'
+import { readPdfClassificationMetadataBytes } from '@genoffice/pdf-tools'
 import {
   applySaveRequest,
   extractPagesBytes,
+  insertBlankPageBytes,
   insertPdfBytes,
   savePdfToPath,
 } from '../src/main/save-pdf'
@@ -42,6 +52,38 @@ function pageAnnots(doc: PDFDocument, pageIndex: number): PDFDict[] {
   const annots = doc.getPage(pageIndex).node.lookupMaybe(PDFName.of('Annots'), PDFArray)
   if (!annots) return []
   return Array.from({ length: annots.size() }, (_, i) => annots.lookup(i, PDFDict))
+}
+
+function addSignatureField(
+  document: PDFDocument,
+  name: string,
+  y: number,
+  signed = false,
+  withAppearance = true,
+): void {
+  const page = document.getPage(0)
+  const form = document.getForm()
+  const signatureDictionary = document.context.obj({
+    FT: 'Sig',
+    T: PDFHexString.fromText(name),
+    ...(signed
+      ? { V: { Type: 'Sig', Filter: 'Adobe.PPKLite', SubFilter: 'adbe.pkcs7.detached' } }
+      : {}),
+  })
+  const signatureReference = document.context.register(signatureDictionary)
+  const widget = PDFWidgetAnnotation.create(document.context, signatureReference)
+  widget.setRectangle({ x: 40, y, width: 160, height: 48 })
+  widget.setP(page.ref)
+  if (withAppearance) {
+    const appearanceReference = document.context.register(
+      document.context.formXObject([], { BBox: [0, 0, 160, 48], Resources: {} }),
+    )
+    widget.setNormalAppearance(appearanceReference)
+  }
+  const widgetReference = document.context.register(widget.dict)
+  signatureDictionary.set(PDFName.of('Kids'), document.context.obj([widgetReference]))
+  form.acroForm.addField(signatureReference)
+  page.node.addAnnot(widgetReference)
 }
 
 const subtypeOf = (annot: PDFDict) => annot.lookup(PDFName.of('Subtype'), PDFName).decodeText()
@@ -87,6 +129,52 @@ describe('insertPdfBytes', () => {
     const { merged } = await insertPdfBytes(dst, src, 99)
     const out = await PDFDocument.load(merged)
     expect(out.getPage(1).getWidth()).toBe(200)
+  })
+})
+
+describe('insertBlankPageBytes', () => {
+  it('inserts a blank page after the requested page with matching geometry', async () => {
+    const source = await PDFDocument.create()
+    source.addPage([300, 500]).setRotation(degrees(90))
+    source.addPage([600, 800])
+
+    const { merged, count } = await insertBlankPageBytes(await source.save(), 0)
+    const output = await PDFDocument.load(merged)
+
+    expect(count).toBe(1)
+    expect(output.getPageCount()).toBe(3)
+    expect(output.getPage(1).getSize()).toEqual({ width: 300, height: 500 })
+    expect(output.getPage(1).getRotation().angle).toBe(90)
+    expect(output.getPage(2).getSize()).toEqual({ width: 600, height: 800 })
+  })
+
+  it('inserts at the front using the first page geometry for index -1', async () => {
+    const bytes = await makePdf([[320, 480]])
+    const { merged } = await insertBlankPageBytes(bytes, -1)
+    const output = await PDFDocument.load(merged)
+
+    expect(output.getPageCount()).toBe(2)
+    expect(output.getPage(0).getSize()).toEqual({ width: 320, height: 480 })
+  })
+
+  it('inserts multiple landscape pages with a selected paper size', async () => {
+    const bytes = await makePdf([[320, 480]])
+    const { merged, count } = await insertBlankPageBytes(bytes, 0, {
+      count: 3,
+      pageSize: 'A5',
+      orientation: 'landscape',
+    })
+    const output = await PDFDocument.load(merged)
+
+    expect(count).toBe(3)
+    expect(output.getPageCount()).toBe(4)
+    expect(output.getPage(1).getSize()).toEqual({ width: 595.28, height: 419.53 })
+    expect(output.getPage(3).getSize()).toEqual({ width: 595.28, height: 419.53 })
+  })
+
+  it('rejects an unsafe blank page count', async () => {
+    const bytes = await makePdf([[320, 480]])
+    await expect(insertBlankPageBytes(bytes, 0, { count: 101 })).rejects.toThrow('Blank page count')
   })
 })
 
@@ -201,7 +289,15 @@ describe('applySaveRequest', () => {
       bytes,
       request({
         drawings: [
-          { kind: 'note', pageIndex: 0, color: [1, 0, 0], at: [50, 700], contents: 'hello note' },
+          {
+            kind: 'note',
+            pageIndex: 0,
+            color: [1, 0, 0],
+            at: [50, 700],
+            contents: 'hello note',
+            author: 'AI reviewer',
+            subject: 'Review finding',
+          },
           {
             kind: 'ink',
             pageIndex: 0,
@@ -222,7 +318,12 @@ describe('applySaveRequest', () => {
       }),
     )
     const out = await PDFDocument.load(saved)
-    expect(pageAnnots(out, 0).map(subtypeOf)).toEqual(['Text', 'Ink', 'Square', 'Line'])
+    const annotations = pageAnnots(out, 0)
+    expect(annotations.map(subtypeOf)).toEqual(['Text', 'Ink', 'Square', 'Line'])
+    expect(annotations[0]!.lookup(PDFName.of('T'), PDFHexString).decodeText()).toBe('AI reviewer')
+    expect(annotations[0]!.lookup(PDFName.of('Subj'), PDFHexString).decodeText()).toBe(
+      'Review finding',
+    )
   })
 
   it('ignores markups and drawings addressing missing pages', async () => {
@@ -279,6 +380,27 @@ describe('applySaveRequest', () => {
     expect((await PDFDocument.load(saved)).getPageCount()).toBe(1)
   })
 
+  it('embeds deduplicated center-rotated stamps', async () => {
+    const bytes = await makePdf([[612, 792]])
+    const saved = await apply(
+      bytes,
+      request({
+        stampImages: [TINY_PNG],
+        stamps: [
+          { pageIndex: 0, image: '', imageIndex: 0, rect: [100, 300, 200, 350], rotation: 35 },
+          { pageIndex: 0, image: '', imageIndex: 0, rect: [300, 500, 400, 550], rotation: -35 },
+        ],
+      }),
+    )
+    const document = await PDFDocument.load(saved)
+    const resources = document.getPage(0).node.Resources()
+    const xObjects = resources?.lookupMaybe(PDFName.of('XObject'), PDFDict)
+    const imageRefs = xObjects?.keys().map((key) => String(xObjects.get(key))) ?? []
+    expect(imageRefs).toHaveLength(2)
+    expect(new Set(imageRefs).size).toBe(1)
+    expect(document.getPageCount()).toBe(1)
+  })
+
   it('applies metadata and splits keywords on mixed separators', async () => {
     const bytes = await makePdf([[100, 100]])
     const saved = await apply(
@@ -290,6 +412,27 @@ describe('applySaveRequest', () => {
     expect(out.getAuthor()).toBe('Me')
     expect(out.getKeywords()).toContain('a')
     expect(out.getKeywords()).toContain('d')
+  })
+
+  it('persists document classification without replacing standard metadata', async () => {
+    const document = await PDFDocument.create()
+    document.addPage([100, 100])
+    document.setTitle('Existing title')
+    const saved = await apply(
+      await document.save({ useObjectStreams: false }),
+      request({
+        classification: {
+          labels: [{ id: 'resume', name: 'Resume' }],
+          sensitivity: 'restricted',
+        },
+      }),
+    )
+
+    expect((await PDFDocument.load(saved)).getTitle()).toBe('Existing title')
+    expect(await readPdfClassificationMetadataBytes(saved)).toEqual({
+      labels: [{ id: 'resume', name: 'Resume' }],
+      sensitivity: 'restricted',
+    })
   })
 
   it('deletes pages by original index but never removes the last page', async () => {
@@ -366,6 +509,62 @@ describe('applySaveRequest', () => {
     const out = await PDFDocument.load(saved)
     expect(out.getForm().getTextField('user.name').getText()).toBe('Alice')
     expect(out.getForm().getCheckBox('user.agree').isChecked()).toBe(true)
+  })
+
+  it('preserves multi-select choices and editable dropdown values', async () => {
+    const doc = await PDFDocument.create()
+    const page = doc.addPage([300, 300])
+    const form = doc.getForm()
+    const topics = form.createOptionList('topics')
+    topics.addOptions(['Design', 'Engineering', 'Research'])
+    topics.enableMultiselect()
+    topics.addToPage(page, { x: 20, y: 180, width: 160, height: 60 })
+    const department = form.createDropdown('department')
+    department.addOptions(['Sales', 'Support'])
+    department.enableEditing()
+    department.addToPage(page, { x: 20, y: 130, width: 160, height: 24 })
+    const bytes = await doc.save({ useObjectStreams: false })
+
+    const saved = await apply(
+      bytes,
+      request({
+        formValues: [
+          { name: 'topics', kind: 'choice', value: ['Design', 'Research'] },
+          { name: 'department', kind: 'choice', value: 'Customer Success' },
+        ],
+      }),
+    )
+    const out = await PDFDocument.load(saved)
+    expect(out.getForm().getOptionList('topics').getSelected()).toEqual(['Design', 'Research'])
+    expect(out.getForm().getOptionList('topics').isMultiselect()).toBe(true)
+    expect(out.getForm().getDropdown('department').getSelected()).toEqual(['Customer Success'])
+    expect(out.getForm().getDropdown('department').isEditable()).toBe(true)
+  })
+
+  it('removes completed empty signature fields without touching signed fields', async () => {
+    const doc = await PDFDocument.create()
+    const page = doc.addPage([300, 300])
+    doc.getForm().createTextField('customer').addToPage(page, {
+      x: 20,
+      y: 220,
+      width: 160,
+      height: 24,
+    })
+    addSignatureField(doc, 'approval', 140, false, false)
+    addSignatureField(doc, 'existing_digital_signature', 70, true)
+
+    const saved = await apply(
+      await doc.save({ useObjectStreams: false, updateFieldAppearances: false }),
+      request({ removeSignatureFields: ['approval', 'existing_digital_signature'] }),
+    )
+    const output = await PDFDocument.load(saved)
+
+    expect(
+      output
+        .getForm()
+        .getFields()
+        .map((field) => field.getName()),
+    ).toEqual(['customer', 'existing_digital_signature'])
   })
 
   it('falls back to NeedAppearances when form values cannot be WinAnsi-encoded', async () => {

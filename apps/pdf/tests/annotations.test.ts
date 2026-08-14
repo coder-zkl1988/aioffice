@@ -3,6 +3,7 @@ import {
   MARKUP_COLORS,
   geomDispSize,
   pdfRectToCss,
+  pdfStampToCss,
   pdfToView,
   quadToRect,
   selectionQuadsByPage,
@@ -66,6 +67,30 @@ describe('pdfRectToCss', () => {
     const box = pdfRectToCss(geom(90), [40, 60, 10, 20], 1)
     expect(box.width).toBeGreaterThan(0)
     expect(box.height).toBeGreaterThan(0)
+  })
+})
+
+describe('pdfStampToCss', () => {
+  it('previews a center-rotated stamp on an unrotated page', () => {
+    expect(pdfStampToCss(geom(0), [10, 20, 110, 70], 35, 2)).toEqual({
+      left: 20,
+      top: 260,
+      width: 200,
+      height: 100,
+      transform: 'rotate(-35deg)',
+      transformOrigin: 'center',
+    })
+  })
+
+  it('adds the page rotation without distorting the source image dimensions', () => {
+    expect(pdfStampToCss(geom(90), [100, 200, 300, 300], 35, 1)).toEqual({
+      left: 150,
+      top: 150,
+      width: 200,
+      height: 100,
+      transform: 'rotate(55deg)',
+      transformOrigin: 'center',
+    })
   })
 })
 

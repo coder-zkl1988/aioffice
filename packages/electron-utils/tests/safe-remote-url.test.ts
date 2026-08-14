@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fetchWithSsrfGuard, isBlockedAddress, isSafeRemoteUrl } from '../src/safe-remote-url'
+import {
+  fetchWithSsrfGuard,
+  fetchWithSsrfGuardResult,
+  isBlockedAddress,
+  isSafeRemoteUrl,
+} from '../src/safe-remote-url'
 
 describe('isBlockedAddress', () => {
   it.each([
@@ -148,6 +153,22 @@ describe('fetchWithSsrfGuard', () => {
       headers: { 'User-Agent': 'test-agent' },
       redirect: 'manual',
     })
+  })
+
+  it('reports the validated final URL and passes an abort signal', async () => {
+    const signal = AbortSignal.timeout(1000)
+    const final = new Response('ok', { status: 200 })
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(res(302, 'https://1.1.1.1/final.html'))
+      .mockResolvedValueOnce(final)
+    const out = await fetchWithSsrfGuardResult('https://8.8.8.8/start.html', {
+      fetchImpl,
+      signal,
+    })
+
+    expect(out).toEqual({ response: final, url: 'https://1.1.1.1/final.html' })
+    expect(fetchImpl.mock.calls[1][1]).toMatchObject({ redirect: 'manual', signal })
   })
 
   it('never requests a target that fails the initial check', async () => {

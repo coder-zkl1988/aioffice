@@ -1,5 +1,6 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import type { AgentToolCall, AgentToolDef, ToolExecution } from '@genoffice/agent-core'
+import type { PdfClassificationMetadata } from '@genoffice/pdf-tools'
 import type { OutlineNode } from '../OutlinePanel'
 import type { PageEntry, SearchIndex } from '../search'
 import { searchInIndex } from '../search'
@@ -14,9 +15,11 @@ import type {
   PageImageRef,
   TextEditInput,
 } from '../../shared/ipc'
+import type { DrawingInput } from '../../shared/ipc'
 import { groupPageBlocks } from '../text-block'
 import { joinBlockLines, measurePt, wrapText } from '../text-wrap'
 import { t } from '../i18n/locale'
+import { normalizeAiCreatedPdfDocument, type AiCreatedPdfDocument } from '../ai-created-pdf'
 
 /** Text cap per read_pages fed back to the model (the payload is resent in full each turn, so volume must be limited) */
 const READ_CHUNK_CHARS = 24_000
@@ -35,6 +38,15 @@ export interface PdfAiDeps {
   /** Original page number → scroll to that page; returns false if the page was deleted */
   gotoPage(origPage: number): boolean
   addMarkup(type: MarkupType, origIdx: number, rects: [number, number, number, number][]): void
+  addReviewComment(comment: Extract<DrawingInput, { kind: 'note' }>): void
+  setClassification(metadata: PdfClassificationMetadata): void
+  createPdfDocument(
+    document: AiCreatedPdfDocument,
+  ): Promise<
+    | { ok: true; savedPath: string; pageCount: number }
+    | { ok: true; canceled: true }
+    | { ok: false; error: string }
+  >
   /** Queue a pending text edit (dry-run validated against the file when possible); null = accepted, string = rejection reason */
   editText(input: TextEditInput): Promise<string | null>
   /** Edit-font ids available on this machine (EDIT_FONTS subset) */
@@ -77,6 +89,67 @@ export interface PdfAiDeps {
 }
 
 export const AGENT_TOOLS: AgentToolDef[] = [
+  {
+    name: 'create_pdf_document',
+    description:
+      "Create and save a new standalone PDF from structured content, rendered locally without cloud document services. Use this when the user asks to create a report, proposal, invoice, brief, checklist, memo, or other PDF. This does not modify the currently open PDF. Never pass HTML; choose structured section types and preserve the user's facts exactly.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Document title' },
+        subtitle: {
+          type: 'string',
+          description: 'Optional subtitle or short document description',
+        },
+        reference_number: {
+          type: 'string',
+          description: 'Optional reference, order, or document number',
+        },
+        file_name: {
+          type: 'string',
+          description: 'Optional output file name, with or without .pdf',
+        },
+        primary_color: { type: 'string', description: 'Optional accent color in #RRGGBB format' },
+        sections: {
+          type: 'array',
+          description:
+            'Ordered structured sections. text requires body; key_value requires pairs; line_items requires columns and rows; bullet_list requires items; signature requires signatories.',
+          items: {
+            type: 'object',
+            properties: {
+              type: {
+                type: 'string',
+                enum: ['text', 'key_value', 'line_items', 'bullet_list', 'signature'],
+              },
+              heading: { type: 'string', description: 'Optional section heading' },
+              body: { type: 'string', description: 'Text section body' },
+              pairs: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    label: { type: 'string' },
+                    value: { type: 'string' },
+                  },
+                  required: ['label', 'value'],
+                },
+              },
+              columns: { type: 'array', items: { type: 'string' } },
+              rows: {
+                type: 'array',
+                items: { type: 'array', items: { type: 'string' } },
+              },
+              total_row: { type: 'array', items: { type: 'string' } },
+              items: { type: 'array', items: { type: 'string' } },
+              signatories: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['type'],
+          },
+        },
+      },
+      required: ['title', 'sections'],
+    },
+  },
   {
     name: 'read_pages',
     description:
@@ -134,6 +207,35 @@ export const AGENT_TOOLS: AgentToolDef[] = [
         },
       },
       required: ['page', 'text', 'type'],
+    },
+  },
+  {
+    name: 'add_review_comment',
+    description:
+      'Add one review sticky note beside a verbatim passage on a page. Use this for concrete review findings, contradictions, factual concerns, unclear wording, or action items. Read the page first. anchor_text must be an exact quote from that page; if it appears more than once, pass occurrence. One call adds one finding.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        page: { type: 'integer', description: 'Page number (1-based)' },
+        anchor_text: {
+          type: 'string',
+          description: 'Short verbatim quote from the target page that supports the finding',
+        },
+        occurrence: {
+          type: 'integer',
+          description: 'Which occurrence of anchor_text to attach to (1-based)',
+        },
+        subject: { type: 'string', description: 'Short review finding title' },
+        comment: {
+          type: 'string',
+          description: 'Concise review finding, implication, and suggested action when applicable',
+        },
+        author: {
+          type: 'string',
+          description: 'Comment author; defaults to GenOffice AI',
+        },
+      },
+      required: ['page', 'anchor_text', 'subject', 'comment'],
     },
   },
   {
@@ -440,7 +542,7 @@ export const AGENT_TOOLS: AgentToolDef[] = [
 ]
 
 const READONLY_OUTPUT =
-  'The document is encrypted and read-only; it cannot be modified. Inform the user.'
+  'The document is protected and read-only; it cannot be modified. Inform the user.'
 
 function err(output: string, summary: string): ToolExecution {
   return { output, isError: true, summary }
@@ -538,6 +640,80 @@ async function markupText(deps: PdfAiDeps, input: Record<string, unknown>): Prom
   deps.gotoPage(r.origIdx + 1)
   return {
     output: `Marked ${targets.length} occurrence(s) on page ${r.origIdx + 1} (unsaved; the user saves with ⌘S)`,
+    mutated: true,
+    summary,
+  }
+}
+
+async function addReviewComment(
+  deps: PdfAiDeps,
+  input: Record<string, unknown>,
+): Promise<ToolExecution> {
+  const page = Number(input.page)
+  const summary = t('aiToolMarkup', { page })
+  if (deps.readOnly()) return err(READONLY_OUTPUT, summary)
+  const resolved = resolvePage(deps, page)
+  if ('bad' in resolved) return err(resolved.bad, summary)
+  const anchorText = String(input.anchor_text ?? '').trim()
+  const subject = String(input.subject ?? '').trim()
+  const comment = String(input.comment ?? '').trim()
+  const author = String(input.author ?? '').trim() || 'GenOffice AI'
+  if (!anchorText) return err('anchor_text must not be empty', summary)
+  if (!subject || subject.length > 256) {
+    return err('subject must contain 1-256 characters', summary)
+  }
+  if (!comment || comment.length > 2_000) {
+    return err('comment must contain 1-2000 characters', summary)
+  }
+  if (author.length > 256) return err('author must not exceed 256 characters', summary)
+  const indexPromise = deps.searchIndex()
+  if (!indexPromise) return err('Document not ready', summary)
+  const index = await indexPromise
+  const matches = searchInIndex(index, anchorText).filter(
+    (match) => match.pageIndex === resolved.origIdx,
+  )
+  if (matches.length === 0) {
+    return err(
+      `"${anchorText}" not found on page ${page}; use read_pages to copy the exact passage`,
+      summary,
+    )
+  }
+  const occurrence = Math.trunc(Number(input.occurrence ?? 0))
+  if (input.occurrence !== undefined && occurrence < 1) {
+    return err('occurrence must be a positive integer', summary)
+  }
+  if (matches.length > 1 && input.occurrence === undefined) {
+    return err(
+      `"${anchorText}" occurs ${matches.length} times on page ${page}; pass occurrence to select one`,
+      summary,
+    )
+  }
+  const match = matches[(occurrence || 1) - 1]
+  if (!match) {
+    return err(`Occurrence ${occurrence} does not exist on page ${page}`, summary)
+  }
+  const anchorRect = match.rects[0]
+  const geometry = deps.pageGeom(resolved.origIdx)
+  if (!anchorRect || !geometry) return err('Could not locate the review anchor', summary)
+  const anchorBox = pdfRectToCss(geometry, anchorRect, 1)
+  const displaySize = geomDispSize(geometry)
+  const pinPosition = viewToPdf(
+    geometry,
+    Math.max(4, displaySize.width - 28),
+    Math.min(displaySize.height - 4, Math.max(22, anchorBox.top + 20)),
+  )
+  deps.addReviewComment({
+    kind: 'note',
+    pageIndex: resolved.origIdx,
+    color: [1, 0.78, 0.13],
+    at: pinPosition,
+    contents: comment,
+    author,
+    subject,
+  })
+  deps.gotoPage(page)
+  return {
+    output: `Added review comment "${subject}" beside "${anchorText}" on page ${page} (unsaved; the user saves with ⌘S).`,
     mutated: true,
     summary,
   }
@@ -1251,6 +1427,26 @@ export async function executePdfTool(
 ): Promise<ToolExecution> {
   const input = call.input
   switch (call.name) {
+    case 'create_pdf_document': {
+      let document: AiCreatedPdfDocument
+      try {
+        document = normalizeAiCreatedPdfDocument(input)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return err(message, 'PDF · invalid document')
+      }
+      const summary = `PDF · ${document.title}`
+      if (signal?.aborted) return err('PDF creation was canceled', summary)
+      const result = await deps.createPdfDocument(document)
+      if (!result.ok) return err(result.error, summary)
+      if ('canceled' in result) {
+        return { output: 'The user canceled the save dialog; no PDF was created.', summary }
+      }
+      return {
+        output: `Created and saved "${document.title}" as ${result.savedPath} (${result.pageCount} pages).`,
+        summary,
+      }
+    }
     case 'read_pages':
       return readPages(deps, input)
     case 'search_text':
@@ -1264,6 +1460,8 @@ export async function executePdfTool(
     }
     case 'markup_text':
       return markupText(deps, input)
+    case 'add_review_comment':
+      return addReviewComment(deps, input)
     case 'edit_text':
       return editText(deps, input)
     case 'edit_block':

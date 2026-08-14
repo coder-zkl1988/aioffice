@@ -9,6 +9,26 @@ const require = createRequire(import.meta.url)
 const pdfjsRoot = dirname(dirname(require.resolve('pdfjs-dist/package.json')))
 // vite-plugin-static-copy globs require POSIX separators; join() breaks on Windows
 const pdfjsDir = (sub: string) => normalizePath(join(pdfjsRoot, 'pdfjs-dist', sub))
+const tesseractDir = dirname(require.resolve('tesseract.js/package.json'))
+const tesseractCoreDir = dirname(require.resolve('tesseract.js-core/package.json'))
+const tesseractEnglishDir = dirname(require.resolve('@tesseract.js-data/eng/package.json'))
+const tesseractChineseDir = dirname(require.resolve('@tesseract.js-data/chi_sim/package.json'))
+
+const ocrAssets = [
+  { src: normalizePath(join(tesseractDir, 'dist/worker.min.js')), dest: 'ocr' },
+  {
+    src: normalizePath(join(tesseractCoreDir, 'tesseract-core*-lstm.wasm*')),
+    dest: 'ocr/core',
+  },
+  {
+    src: normalizePath(join(tesseractEnglishDir, '4.0.0_best_int/eng.traineddata.gz')),
+    dest: 'ocr/lang',
+  },
+  {
+    src: normalizePath(join(tesseractChineseDir, '4.0.0_best_int/chi_sim.traineddata.gz')),
+    dest: 'ocr/lang',
+  },
+]
 
 export default defineConfig({
   root: 'src/renderer',
@@ -19,6 +39,7 @@ export default defineConfig({
         { src: pdfjsDir('cmaps'), dest: 'pdfjs' },
         { src: pdfjsDir('standard_fonts'), dest: 'pdfjs' },
         { src: pdfjsDir('wasm'), dest: 'pdfjs' },
+        ...ocrAssets,
       ],
     }),
   ],

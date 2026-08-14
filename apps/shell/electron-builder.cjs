@@ -233,6 +233,9 @@ const config = {
       { target: 'zip', arch: includeMacX64 ? ['arm64', 'x64'] : ['arm64'] },
     ],
     category: 'public.app-category.productivity',
+    extendInfo: {
+      NSCameraUsageDescription: 'GenOffice uses the camera only when you scan pages into a PDF.',
+    },
     hardenedRuntime: true,
     gatekeeperAssess: false,
     entitlements: 'build/entitlements.mac.plist',

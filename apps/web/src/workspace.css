@@ -467,6 +467,34 @@ h2 {
   color: var(--text-tertiary);
   font-size: 11px;
 }
+.file-labels {
+  display: flex;
+  min-width: 0;
+  gap: 4px;
+  margin-top: 5px;
+  overflow: hidden;
+}
+.file-labels > span {
+  max-width: 130px;
+  overflow: hidden;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-labels > .sensitivity-internal {
+  border-color: var(--web-sheets);
+  color: var(--web-sheets);
+}
+.file-labels > .sensitivity-confidential,
+.file-labels > .sensitivity-restricted {
+  border-color: var(--danger);
+  color: var(--danger);
+}
 .recent-row time {
   color: var(--text-tertiary);
   font-size: 11px;

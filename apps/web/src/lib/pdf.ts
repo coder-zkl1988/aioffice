@@ -1,4 +1,21 @@
-import { PDFDocument, degrees, rgb } from 'pdf-lib'
+import {
+  PDFArray,
+  PDFDocument,
+  PDFDropdown,
+  PDFHexString,
+  PDFName,
+  PDFOptionList,
+  degrees,
+  rgb,
+} from 'pdf-lib'
+import type { PDFRef } from 'pdf-lib'
+import {
+  applyPdfClassificationMetadata,
+  extractPagesBytes,
+  insertBlankPageBytes,
+  insertPdfBytes,
+  removeEmptyPdfSignatureFields,
+} from '@genoffice/pdf-tools'
 import type {
   DrawingInput,
   ImageEditFailure,
@@ -12,6 +29,7 @@ import type {
   TextEditInput,
   TextEditValidation,
 } from '../../../pdf/src/shared/ipc'
+import { stampDrawPlacement } from '../../../pdf/src/shared/ipc'
 
 const color = ([red, green, blue]: [number, number, number]) => rgb(red, green, blue)
 
@@ -119,6 +137,16 @@ function bounds(values: number[]): [number, number, number, number] {
   return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]
 }
 
+function appendAnnotation(
+  document: PDFDocument,
+  page: ReturnType<PDFDocument['getPage']>,
+  reference: PDFRef,
+): void {
+  const annotations = page.node.lookupMaybe(PDFName.of('Annots'), PDFArray)
+  if (annotations) annotations.push(reference)
+  else page.node.set(PDFName.of('Annots'), document.context.obj([reference]))
+}
+
 function drawMarkup(page: ReturnType<PDFDocument['getPage']>, markup: MarkupInput): void {
   for (const quad of markup.quads) {
     const [x1, y1, x2, y2] = bounds(quad)
@@ -155,13 +183,22 @@ async function drawDrawing(
     return
   }
   if (drawing.kind === 'note') {
-    page.drawText(drawing.contents, {
-      x: drawing.at[0],
-      y: drawing.at[1],
-      size: 9,
-      color: color(drawing.color),
-      maxWidth: 180,
+    const [x, y] = drawing.at
+    const annotation = document.context.obj({
+      Type: 'Annot',
+      Subtype: 'Text',
+      Rect: [x, y - 18, x + 20, y],
+      Name: 'Comment',
+      C: drawing.color,
+      F: 4,
+      P: page.ref,
     })
+    annotation.set(PDFName.of('Contents'), PDFHexString.fromText(drawing.contents))
+    annotation.set(PDFName.of('T'), PDFHexString.fromText(drawing.author?.trim() || 'GenOffice'))
+    if (drawing.subject?.trim()) {
+      annotation.set(PDFName.of('Subj'), PDFHexString.fromText(drawing.subject.trim()))
+    }
+    appendAnnotation(document, page, document.context.register(annotation))
     return
   }
   if (drawing.kind === 'ink') {
@@ -216,15 +253,24 @@ async function drawStamp(
   document: PDFDocument,
   page: ReturnType<PDFDocument['getPage']>,
   stamp: StampInput,
+  imageCache: Map<string, Awaited<ReturnType<PDFDocument['embedPng']>>>,
+  stampImages: string[],
 ): Promise<void> {
-  const image = await document.embedPng(stamp.image)
-  const [x1, y1, x2, y2] = stamp.rect
+  const imageData = stamp.image || stampImages[stamp.imageIndex ?? -1]
+  if (!imageData) return
+  let image = imageCache.get(imageData)
+  if (!image) {
+    image = await document.embedPng(imageData)
+    imageCache.set(imageData, image)
+  }
+  const placement = stampDrawPlacement(stamp.rect, stamp.rotation)
   page.drawImage(image, {
-    x: x1,
-    y: y1,
-    width: x2 - x1,
-    height: y2 - y1,
+    x: placement.x,
+    y: placement.y,
+    width: placement.width,
+    height: placement.height,
     opacity: stamp.opacity ?? 1,
+    rotate: degrees(placement.rotation),
   })
 }
 
@@ -232,13 +278,25 @@ function applyForms(document: PDFDocument, request: SavePdfRequest): void {
   const form = document.getForm()
   for (const value of request.formValues) {
     try {
-      if (value.kind === 'text') form.getTextField(value.name).setText(value.value || '')
+      const scalarValue = Array.isArray(value.value) ? (value.value[0] ?? '') : (value.value ?? '')
+      if (value.kind === 'text') form.getTextField(value.name).setText(scalarValue)
       else if (value.kind === 'checkbox') {
         const field = form.getCheckBox(value.name)
         if (value.checked) field.check()
         else field.uncheck()
-      } else if (value.kind === 'radio') form.getRadioGroup(value.name).select(value.value || '')
-      else form.getDropdown(value.name).select(value.value || '')
+      } else if (value.kind === 'radio') {
+        const field = form.getRadioGroup(value.name)
+        if (scalarValue) field.select(scalarValue)
+        else field.clear()
+      } else {
+        const field = form.getField(value.name)
+        if (!(field instanceof PDFDropdown || field instanceof PDFOptionList)) continue
+        const selection = Array.isArray(value.value)
+          ? value.value.filter((entry) => entry.length > 0)
+          : scalarValue
+        if (Array.isArray(selection) ? selection.length > 0 : selection) field.select(selection)
+        else field.clear()
+      }
     } catch {
       // A stale or unsupported form field is skipped without blocking other edits.
     }
@@ -256,6 +314,7 @@ export async function applyWebPdfSave(
   const document = await PDFDocument.load(source, { updateMetadata: false })
   const pages = document.getPages()
   applyForms(document, request)
+  removeEmptyPdfSignatureFields(document, request.removeSignatureFields ?? [])
 
   for (const rotation of request.rotations || []) {
     const page = pages[rotation.pageIndex]
@@ -269,9 +328,10 @@ export async function applyWebPdfSave(
     const page = pages[drawing.pageIndex]
     if (page) await drawDrawing(document, page, drawing)
   }
+  const stampImageCache = new Map<string, Awaited<ReturnType<PDFDocument['embedPng']>>>()
   for (const stamp of request.stamps) {
     const page = pages[stamp.pageIndex]
-    if (page) await drawStamp(document, page, stamp)
+    if (page) await drawStamp(document, page, stamp, stampImageCache, request.stampImages ?? [])
   }
 
   if (request.metadata) {
@@ -281,6 +341,9 @@ export async function applyWebPdfSave(
     if (request.metadata.keywords !== undefined) {
       document.setKeywords(request.metadata.keywords.split(/[,，;；]/).map((item) => item.trim()))
     }
+  }
+  if (request.classification) {
+    applyPdfClassificationMetadata(document, request.classification)
   }
 
   for (const pageIndex of [...(request.deletedPages || [])].sort((left, right) => right - left)) {
@@ -319,11 +382,7 @@ export async function extractWebPdf(
   source: ArrayBuffer,
   pageIndexes: number[],
 ): Promise<Uint8Array> {
-  const input = await PDFDocument.load(source)
-  const output = await PDFDocument.create()
-  const pages = await output.copyPages(input, pageIndexes)
-  for (const page of pages) output.addPage(page)
-  return output.save({ useObjectStreams: false })
+  return extractPagesBytes(source, pageIndexes)
 }
 
 export async function insertWebPdf(
@@ -331,10 +390,15 @@ export async function insertWebPdf(
   addition: ArrayBuffer,
   afterPageIndex: number,
 ): Promise<{ bytes: Uint8Array; count: number }> {
-  const output = await PDFDocument.load(source)
-  const input = await PDFDocument.load(addition)
-  const pages = await output.copyPages(input, input.getPageIndices())
-  let insertionIndex = Math.min(Math.max(afterPageIndex + 1, 0), output.getPageCount())
-  for (const page of pages) output.insertPage(insertionIndex++, page)
-  return { bytes: await output.save({ useObjectStreams: false }), count: pages.length }
+  const result = await insertPdfBytes(source, addition, afterPageIndex)
+  return { bytes: result.merged, count: result.count }
+}
+
+export async function insertWebPdfBlankPage(
+  source: ArrayBuffer,
+  afterPageIndex: number,
+  options?: Parameters<typeof insertBlankPageBytes>[2],
+): Promise<{ bytes: Uint8Array; count: number }> {
+  const result = await insertBlankPageBytes(source, afterPageIndex, options)
+  return { bytes: result.merged, count: result.count }
 }

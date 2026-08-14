@@ -1,6 +1,9 @@
 import { lookup } from 'node:dns/promises'
 import { BlockList, isIP } from 'node:net'
 
+export const webContentSecurityPolicy =
+  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'"
+
 const blockedAddresses = new BlockList()
 
 for (const [network, prefix] of [

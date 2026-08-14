@@ -32,6 +32,7 @@ Registration lives in `fonts.css`; family-name mapping in `cssFontFamily()` of `
 | --------------------------------------- | ------------------------------------------ |
 | Noto Sans CJK SC (GB2312-subset woff2)  | fallback for heiti-style (sans) families   |
 | Noto Serif CJK SC (GB2312-subset woff2) | fallback for songti-style (serif) families |
+| Noto Sans SC (GB2312-subset TTF)        | embedded text in locally rebuilt PDFs      |
 
 Source: [notofonts/noto-cjk](https://github.com/notofonts/noto-cjk) (SIL OFL 1.1),
 subset with fonttools to all 7,445 GB2312 Han characters + CJK punctuation/fullwidth
@@ -39,6 +40,11 @@ forms + basic Latin
 (`pyftsubset --text-file=gb2312 --unicodes="U+0020-024F,U+2000-206F,U+3000-303F,U+FF00-FFEF" --flavor=woff2`).
 Rare characters outside the subset still fall through to system fonts (shown as
 missing glyphs in minimal environments); bold is synthesized by the browser.
+
+The PDF-specific TTF is a static Regular instance of the Google Fonts
+`NotoSansSC[wght].ttf`, subset to the same character map as the sans WOFF2 above.
+TrueType outlines allow the browser and desktop PDF engine to embed only the glyphs
+used by each rebuilt document while preserving reliable rendering across PDF viewers.
 
 The serif subset also backs the `GenOffice Fullwidth TC` face (`fonts.css`), a
 unicode-range shim (U+FF0D/FF0F/FF3C/FF3F/FF5E) slotted before Songti TC in the

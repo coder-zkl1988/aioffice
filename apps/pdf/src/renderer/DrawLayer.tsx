@@ -17,6 +17,8 @@ interface Box {
 export interface LocalDrawing {
   id: string
   input: DrawingInput
+  /** Empty AcroForm signature field replaced by this local wet signature. */
+  sourceSignatureField?: string
 }
 
 /** 5-color palette (0-1 rgb), same visual language as the markup floating bar */
@@ -427,13 +429,14 @@ export function DrawLayer({
         .map((d) => {
           const note = d.input as Extract<DrawingInput, { kind: 'note' }>
           const [vx, vy] = toView(geom, scale, note.at[0], note.at[1])
+          const noteLabel = [note.subject, note.contents, note.author].filter(Boolean).join('\n\n')
           return (
             <button
               key={d.id}
               className={`pdf-note-pin${d.id === selectedId ? ' pdf-note-pin-selected' : ''}`}
               style={{ left: vx, top: vy - 20, background: cssRgb(note.color) }}
-              data-tip={`${note.contents}\n\n${selectTitle}`}
-              aria-label={`${note.contents}\n\n${selectTitle}`}
+              data-tip={`${noteLabel}\n\n${selectTitle}`}
+              aria-label={`${noteLabel}\n\n${selectTitle}`}
               onClick={(e) => onSelect(d.id, e.clientX, e.clientY)}
             >
               <svg

@@ -26,8 +26,10 @@ export { installNavigationGuard } from './navigation-guard'
 export { safeExternalUrl, type SafeExternalUrlOptions } from './safe-external-url'
 export {
   fetchWithSsrfGuard,
+  fetchWithSsrfGuardResult,
   isBlockedAddress,
   isSafeRemoteUrl,
   type FetchWithSsrfGuardOptions,
+  type GuardedFetchResult,
 } from './safe-remote-url'
 export { fetchRemoteImage, remoteImageHeaders } from './remote-image'

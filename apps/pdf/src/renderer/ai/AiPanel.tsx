@@ -10,7 +10,16 @@ import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
 import { createPdfSkill } from './pdf-skill'
 import { createElectronTransport } from './transport'
-import type { PdfAiDeps } from './tools'
+import { executePdfTool, type PdfAiDeps } from './tools'
+import {
+  auditNumbersInSearchIndex,
+  type NumberAuditFinding,
+  type NumberAuditReport,
+} from '../number-audit'
+import { auditConsistencyInSearchIndex } from '../consistency-audit'
+import { consistencyAuditCopy } from './consistency-audit-copy'
+import { auditDocumentInSearchIndex } from '../document-audit'
+import { documentAuditCopy } from './document-audit-copy'
 
 const PANEL_WIDTH_KEY = 'pdf-ai-panel-width'
 const PANEL_WIDTH_DEFAULT = 360
@@ -44,6 +53,156 @@ interface ChatEntry {
 
 type Phase = 'thinking' | 'replying' | 'working'
 
+interface NumberAuditCopy {
+  action: string
+  scanSummary(report: NumberAuditReport): string
+  commentSummary(count: number): string
+  result(report: NumberAuditReport, commentsAdded: number, readOnly: boolean): string
+  subject(finding: NumberAuditFinding): string
+  comment(finding: NumberAuditFinding): string
+}
+
+function compactFindingText(value: string): string {
+  return value.replace(/\s+/gu, ' ').trim().slice(0, 160).replace(/`/gu, '\\`')
+}
+
+function zhFindingLine(finding: NumberAuditFinding, traditional: boolean): string {
+  const page = finding.pageIndex + 1
+  if (finding.kind === 'arithmetic') {
+    return `- 第 ${page} ${traditional ? '頁' : '页'}：\`${compactFindingText(finding.anchorText)}\` ${traditional ? '的結果為' : '的结果为'} ${finding.stated}，${traditional ? '應為' : '应为'} ${finding.expected}。`
+  }
+  if (finding.kind === 'consistency') {
+    return `- 第 ${page} ${traditional ? '頁' : '页'}："${finding.label}" ${traditional ? '為' : '为'} ${finding.stated}，${traditional ? '與' : '与'}第 ${(finding.canonicalPageIndex ?? 0) + 1} ${traditional ? '頁的' : '页的'} ${finding.expected} ${traditional ? '不一致' : '不一致'}。`
+  }
+  const location = `${traditional ? '表格' : '表格'} ${finding.tableNumber} ${traditional ? '第' : '第'} ${finding.rowNumber} ${traditional ? '列' : '行'}`
+  return finding.kind === 'tableFormula'
+    ? `- 第 ${page} ${traditional ? '頁' : '页'} ${location}：${finding.label ?? (traditional ? '金額' : '金额')} ${traditional ? '為' : '为'} ${finding.stated}，${traditional ? '依數量與單價計算應為' : '按数量与单价计算应为'} ${finding.expected}。`
+    : `- 第 ${page} ${traditional ? '頁' : '页'} ${location}：${finding.label ?? (traditional ? '合計' : '合计')} ${traditional ? '為' : '为'} ${finding.stated}，${traditional ? '依明細加總應為' : '按明细加总应为'} ${finding.expected}。`
+}
+
+function enFindingLine(finding: NumberAuditFinding): string {
+  const page = finding.pageIndex + 1
+  if (finding.kind === 'arithmetic') {
+    return `- Page ${page}: \`${compactFindingText(finding.anchorText)}\` states ${finding.stated}; expected ${finding.expected}.`
+  }
+  if (finding.kind === 'consistency') {
+    return `- Page ${page}: "${finding.label}" is ${finding.stated}, conflicting with ${finding.expected} on page ${(finding.canonicalPageIndex ?? 0) + 1}.`
+  }
+  const location = `table ${finding.tableNumber}, row ${finding.rowNumber}`
+  return finding.kind === 'tableFormula'
+    ? `- Page ${page}, ${location}: ${finding.label ?? 'amount'} is ${finding.stated}; quantity × unit price gives ${finding.expected}.`
+    : `- Page ${page}, ${location}: ${finding.label ?? 'total'} is ${finding.stated}; the detail rows sum to ${finding.expected}.`
+}
+
+function zhFindingSubject(finding: NumberAuditFinding, traditional: boolean): string {
+  if (finding.kind === 'arithmetic') return traditional ? '數字計算不一致' : '数字计算不一致'
+  if (finding.kind === 'consistency') return traditional ? '跨頁數字不一致' : '跨页数字不一致'
+  if (finding.kind === 'tableFormula')
+    return traditional ? '表格金額計算不一致' : '表格金额计算不一致'
+  return traditional ? '表格合計不一致' : '表格合计不一致'
+}
+
+function zhFindingComment(finding: NumberAuditFinding, traditional: boolean): string {
+  if (finding.kind === 'arithmetic') {
+    return traditional
+      ? `此算式的明確結果為 ${finding.stated}，按原式計算應為 ${finding.expected}。請核對並修正。`
+      : `该算式的明示结果为 ${finding.stated}，按原式计算应为 ${finding.expected}。请核对并更正。`
+  }
+  if (finding.kind === 'consistency') {
+    return traditional
+      ? `「${finding.label}」在第 ${(finding.canonicalPageIndex ?? 0) + 1} 頁為 ${finding.expected}，本頁為 ${finding.stated}。請確認版本和統計口徑。`
+      : `“${finding.label}”在第 ${(finding.canonicalPageIndex ?? 0) + 1} 页为 ${finding.expected}，本页为 ${finding.stated}。请确认版本和统计口径。`
+  }
+  if (finding.kind === 'tableFormula') {
+    return traditional
+      ? `表格第 ${finding.rowNumber} 列的${finding.label ?? '金額'}為 ${finding.stated}，依數量與單價計算應為 ${finding.expected}。請核對明細。`
+      : `表格第 ${finding.rowNumber} 行的${finding.label ?? '金额'}为 ${finding.stated}，按数量与单价计算应为 ${finding.expected}。请核对明细。`
+  }
+  return traditional
+    ? `表格第 ${finding.rowNumber} 列的${finding.label ?? '合計'}為 ${finding.stated}，依明細加總應為 ${finding.expected}。請核對合計公式。`
+    : `表格第 ${finding.rowNumber} 行的${finding.label ?? '合计'}为 ${finding.stated}，按明细加总应为 ${finding.expected}。请核对合计公式。`
+}
+
+function enFindingSubject(finding: NumberAuditFinding): string {
+  if (finding.kind === 'arithmetic') return 'Arithmetic mismatch'
+  if (finding.kind === 'consistency') return 'Cross-page number mismatch'
+  if (finding.kind === 'tableFormula') return 'Table amount mismatch'
+  return 'Table total mismatch'
+}
+
+function enFindingComment(finding: NumberAuditFinding): string {
+  if (finding.kind === 'arithmetic') {
+    return `This expression states ${finding.stated}, but evaluates to ${finding.expected}. Verify and correct the result.`
+  }
+  if (finding.kind === 'consistency') {
+    return `“${finding.label}” is ${finding.expected} on page ${(finding.canonicalPageIndex ?? 0) + 1} and ${finding.stated} here. Confirm the version and reporting basis.`
+  }
+  if (finding.kind === 'tableFormula') {
+    return `Row ${finding.rowNumber} states ${finding.stated} for ${finding.label ?? 'amount'}, but quantity × unit price gives ${finding.expected}. Verify the detail row.`
+  }
+  return `Row ${finding.rowNumber} states ${finding.stated} for ${finding.label ?? 'total'}, but the detail rows sum to ${finding.expected}. Verify the total formula.`
+}
+
+function numberAuditCopy(lang: string): NumberAuditCopy {
+  if (lang === 'zh') {
+    return {
+      action: '数据核验',
+      scanSummary: (report) => `本地核验 ${report.pagesExamined} 页`,
+      commentSummary: (count) => `添加 ${count} 条核验批注`,
+      result: (report, commentsAdded, readOnly) => {
+        const header = `### 数据核验完成\n\n已检查 ${report.pagesExamined} 页、${report.expressionsChecked} 个显式算式、${report.namedFigures} 个命名指标和 ${report.tablesExamined} 个表格（${report.tableChecks} 项表格校验）。`
+        if (report.findings.length === 0) return `${header}\n\n未发现可确定验证的数字异常。`
+        const mutation = readOnly
+          ? '当前文档为只读，未写入批注。'
+          : `已添加 ${commentsAdded} 条便签批注。`
+        const lines = report.findings.slice(0, 30).map((finding) => zhFindingLine(finding, false))
+        if (report.truncated || report.findings.length > 30) lines.push('- 其余异常已省略。')
+        return `${header}\n\n发现 ${report.findings.length} 个异常，${mutation}\n\n${lines.join('\n')}`
+      },
+      subject: (finding) => zhFindingSubject(finding, false),
+      comment: (finding) => zhFindingComment(finding, false),
+    }
+  }
+  if (lang === 'zh-TW') {
+    return {
+      action: '數據核驗',
+      scanSummary: (report) => `本機核驗 ${report.pagesExamined} 頁`,
+      commentSummary: (count) => `新增 ${count} 則核驗註解`,
+      result: (report, commentsAdded, readOnly) => {
+        const header = `### 數據核驗完成\n\n已檢查 ${report.pagesExamined} 頁、${report.expressionsChecked} 個明確算式、${report.namedFigures} 個命名指標和 ${report.tablesExamined} 個表格（${report.tableChecks} 項表格核驗）。`
+        if (report.findings.length === 0) return `${header}\n\n未發現可確定驗證的數字異常。`
+        const mutation = readOnly
+          ? '目前文件為唯讀，未寫入註解。'
+          : `已新增 ${commentsAdded} 則便利貼註解。`
+        const lines = report.findings.slice(0, 30).map((finding) => zhFindingLine(finding, true))
+        if (report.truncated || report.findings.length > 30) lines.push('- 其餘異常已省略。')
+        return `${header}\n\n發現 ${report.findings.length} 個異常，${mutation}\n\n${lines.join('\n')}`
+      },
+      subject: (finding) => zhFindingSubject(finding, true),
+      comment: (finding) => zhFindingComment(finding, true),
+    }
+  }
+  return {
+    action: 'Check numbers',
+    scanSummary: (report) => `Checked ${report.pagesExamined} pages locally`,
+    commentSummary: (count) => `Added ${count} audit comments`,
+    result: (report, commentsAdded, readOnly) => {
+      const header = `### Number check complete\n\nChecked ${report.pagesExamined} pages, ${report.expressionsChecked} explicit expressions, ${report.namedFigures} named figures, and ${report.tablesExamined} tables (${report.tableChecks} table checks).`
+      if (report.findings.length === 0)
+        return `${header}\n\nNo deterministically verifiable number issues were found.`
+      const mutation = readOnly
+        ? 'The document is read-only, so no comments were added.'
+        : `Added ${commentsAdded} sticky-note comments.`
+      const lines = report.findings.slice(0, 30).map(enFindingLine)
+      if (report.truncated || report.findings.length > 30)
+        lines.push('- Additional findings omitted.')
+      return `${header}\n\nFound ${report.findings.length} issues. ${mutation}\n\n${lines.join('\n')}`
+    },
+    subject: enFindingSubject,
+    comment: enFindingComment,
+  }
+}
+
 export function AiPanel({
   api,
   onCollapse,
@@ -64,6 +223,9 @@ export function AiPanel({
   const [panelWidth, setPanelWidth] = useState(loadPanelWidth)
   const [resizing, setResizing] = useState(false)
   const asideRef = useRef<HTMLElement>(null)
+  const localAuditAbortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => () => localAuditAbortRef.current?.abort(), [])
 
   // The .ai-dock wrapper owns the animated width (docs-style 180ms slide);
   // it tracks the resizable panel width through this variable
@@ -101,6 +263,9 @@ export function AiPanel({
       isDeleted: (i) => apiRef.current.isDeleted(i),
       gotoPage: (p) => apiRef.current.gotoPage(p),
       addMarkup: (type, idx, rects) => apiRef.current.addMarkup(type, idx, rects),
+      addReviewComment: (comment) => apiRef.current.addReviewComment(comment),
+      setClassification: (metadata) => apiRef.current.setClassification(metadata),
+      createPdfDocument: (document) => apiRef.current.createPdfDocument(document),
       editText: (input) => apiRef.current.editText(input),
       editFonts: () => apiRef.current.editFonts(),
       formEdits: () => apiRef.current.formEdits(),
@@ -220,7 +385,273 @@ export function AiPanel({
     })()
   }
 
-  const stop = (): void => loopRef.current?.cancel()
+  const runNumberAudit = (): void => {
+    const indexPromise = apiRef.current.searchIndex()
+    if (!indexPromise || busy) return
+    const copy = numberAuditCopy(langRef.current)
+    const controller = new AbortController()
+    localAuditAbortRef.current = controller
+    stickToBottomRef.current = true
+    setChat((prev) => [
+      ...prev,
+      { role: 'user', text: copy.action },
+      { role: 'assistant', text: '', streaming: true },
+    ])
+    setBusy(true)
+    setPhase('working')
+    void (async () => {
+      try {
+        const index = await indexPromise
+        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+        const report = auditNumbersInSearchIndex(index)
+        const tools: ToolActivity[] = [
+          {
+            name: 'local_number_audit',
+            summary: copy.scanSummary(report),
+            output: JSON.stringify(report, null, 2).slice(0, 2_000),
+          },
+        ]
+        let commentsAdded = 0
+        if (!apiRef.current.readOnly()) {
+          for (let index = 0; index < report.findings.length; index += 1) {
+            if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+            const finding = report.findings[index]!
+            const execution = await executePdfTool(
+              apiRef.current,
+              {
+                id: `local-number-audit-${index}`,
+                name: 'add_review_comment',
+                input: {
+                  page: finding.pageIndex + 1,
+                  anchor_text: finding.anchorText,
+                  occurrence: finding.occurrence,
+                  subject: copy.subject(finding),
+                  comment: copy.comment(finding),
+                  author: 'GenOffice Number Audit',
+                },
+              },
+              controller.signal,
+            )
+            if (!execution.isError) commentsAdded += 1
+          }
+          if (commentsAdded > 0) {
+            tools.push({
+              name: 'add_review_comment',
+              summary: copy.commentSummary(commentsAdded),
+            })
+            apiRef.current.gotoPage(report.findings[0]!.pageIndex + 1)
+          }
+        }
+        patchLast({
+          streaming: false,
+          text: copy.result(report, commentsAdded, apiRef.current.readOnly()),
+          tools,
+        })
+      } catch (error) {
+        patchLast({
+          streaming: false,
+          text:
+            error instanceof DOMException && error.name === 'AbortError'
+              ? tGlobal('aiStopped')
+              : error instanceof Error
+                ? error.message
+                : String(error),
+          isError: !(error instanceof DOMException && error.name === 'AbortError'),
+        })
+      } finally {
+        if (localAuditAbortRef.current === controller) localAuditAbortRef.current = null
+        setBusy(false)
+        setPhase('thinking')
+      }
+    })()
+  }
+
+  const runConsistencyAudit = (): void => {
+    const indexPromise = apiRef.current.searchIndex()
+    if (!indexPromise || busy) return
+    const copy = consistencyAuditCopy(langRef.current)
+    const controller = new AbortController()
+    localAuditAbortRef.current = controller
+    stickToBottomRef.current = true
+    setChat((prev) => [
+      ...prev,
+      { role: 'user', text: copy.action },
+      { role: 'assistant', text: '', streaming: true },
+    ])
+    setBusy(true)
+    setPhase('working')
+    void (async () => {
+      try {
+        const index = await indexPromise
+        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+        const report = auditConsistencyInSearchIndex(index)
+        const tools: ToolActivity[] = [
+          {
+            name: 'local_consistency_audit',
+            summary: copy.scanSummary(report),
+            output: JSON.stringify(report, null, 2).slice(0, 2_000),
+          },
+        ]
+        let commentsAdded = 0
+        if (!apiRef.current.readOnly()) {
+          for (let findingIndex = 0; findingIndex < report.findings.length; findingIndex += 1) {
+            const finding = report.findings[findingIndex]!
+            for (const [claimIndex, claim] of [finding.first, finding.second].entries()) {
+              if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+              const execution = await executePdfTool(
+                apiRef.current,
+                {
+                  id: `local-consistency-audit-${findingIndex}-${claimIndex}`,
+                  name: 'add_review_comment',
+                  input: {
+                    page: claim.pageIndex + 1,
+                    anchor_text: claim.anchorText,
+                    occurrence: claim.occurrence,
+                    subject: copy.subject(finding),
+                    comment: copy.comment(finding, claim),
+                    author: 'GenOffice Consistency Audit',
+                  },
+                },
+                controller.signal,
+              )
+              if (!execution.isError) commentsAdded += 1
+            }
+          }
+          if (commentsAdded > 0) {
+            tools.push({
+              name: 'add_review_comment',
+              summary: copy.commentSummary(commentsAdded),
+            })
+            apiRef.current.gotoPage(report.findings[0]!.first.pageIndex + 1)
+          }
+        }
+        patchLast({
+          streaming: false,
+          text: copy.result(report, commentsAdded, apiRef.current.readOnly()),
+          tools,
+        })
+      } catch (error) {
+        patchLast({
+          streaming: false,
+          text:
+            error instanceof DOMException && error.name === 'AbortError'
+              ? tGlobal('aiStopped')
+              : error instanceof Error
+                ? error.message
+                : String(error),
+          isError: !(error instanceof DOMException && error.name === 'AbortError'),
+        })
+      } finally {
+        if (localAuditAbortRef.current === controller) localAuditAbortRef.current = null
+        setBusy(false)
+        setPhase('thinking')
+      }
+    })()
+  }
+
+  const runDocumentAudit = (): void => {
+    const indexPromise = apiRef.current.searchIndex()
+    if (!indexPromise || busy) return
+    const copy = documentAuditCopy(langRef.current)
+    const controller = new AbortController()
+    localAuditAbortRef.current = controller
+    stickToBottomRef.current = true
+    setChat((prev) => [
+      ...prev,
+      { role: 'user', text: copy.action },
+      { role: 'assistant', text: '', streaming: true },
+    ])
+    setBusy(true)
+    setPhase('working')
+    void (async () => {
+      try {
+        const index = await indexPromise
+        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+        const report = auditDocumentInSearchIndex(index)
+        const tools: ToolActivity[] = [
+          {
+            name: 'local_document_audit',
+            summary: copy.scanSummary(report),
+            output: JSON.stringify(
+              {
+                ...report,
+                sensitiveFindings: report.sensitiveFindings.map(
+                  ({ anchorText: _anchorText, ...finding }) => finding,
+                ),
+              },
+              null,
+              2,
+            ).slice(0, 2_000),
+          },
+        ]
+        let commentsAdded = 0
+        if (!apiRef.current.readOnly()) {
+          apiRef.current.setClassification({
+            labels: report.classifications.map(({ id, name }) => ({ id, name })),
+            sensitivity: report.sensitivity,
+          })
+          tools.push({
+            name: 'set_document_classification',
+            summary: copy.classificationSummary(report),
+          })
+          for (
+            let findingIndex = 0;
+            findingIndex < report.sensitiveFindings.length;
+            findingIndex += 1
+          ) {
+            if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+            const finding = report.sensitiveFindings[findingIndex]!
+            const execution = await executePdfTool(
+              apiRef.current,
+              {
+                id: `local-document-audit-${findingIndex}`,
+                name: 'add_review_comment',
+                input: {
+                  page: finding.pageIndex + 1,
+                  anchor_text: finding.anchorText,
+                  occurrence: finding.occurrence,
+                  subject: copy.subject(finding),
+                  comment: copy.comment(finding),
+                  author: 'GenOffice Document Audit',
+                },
+              },
+              controller.signal,
+            )
+            if (!execution.isError) commentsAdded += 1
+          }
+          if (commentsAdded > 0) {
+            tools.push({ name: 'add_review_comment', summary: copy.commentSummary(commentsAdded) })
+            apiRef.current.gotoPage(report.sensitiveFindings[0]!.pageIndex + 1)
+          }
+        }
+        patchLast({
+          streaming: false,
+          text: copy.result(report, commentsAdded, apiRef.current.readOnly()),
+          tools,
+        })
+      } catch (error) {
+        patchLast({
+          streaming: false,
+          text:
+            error instanceof DOMException && error.name === 'AbortError'
+              ? tGlobal('aiStopped')
+              : error instanceof Error
+                ? error.message
+                : String(error),
+          isError: !(error instanceof DOMException && error.name === 'AbortError'),
+        })
+      } finally {
+        if (localAuditAbortRef.current === controller) localAuditAbortRef.current = null
+        setBusy(false)
+        setPhase('thinking')
+      }
+    })()
+  }
+
+  const stop = (): void => {
+    loopRef.current?.cancel()
+    localAuditAbortRef.current?.abort()
+  }
 
   // One-click AI actions from the ribbon (same pattern as the docs ribbon presets)
   useEffect(() => {
@@ -328,12 +759,55 @@ export function AiPanel({
             <div className="ai-chat-empty-title">{t('aiEmptyTitle')}</div>
             <div className="ai-chat-empty-body">{t('aiEmptyBody')}</div>
             <div className="ai-quick-actions">
+              <button
+                className="ai-quick-btn"
+                onClick={() =>
+                  setPrompt(
+                    lang === 'zh'
+                      ? '请创建一份新的 PDF：'
+                      : lang === 'zh-TW'
+                        ? '請建立一份新的 PDF：'
+                        : 'Create a new PDF: ',
+                  )
+                }
+              >
+                {lang === 'zh' ? '创建 PDF' : lang === 'zh-TW' ? '建立 PDF' : 'Create PDF'}
+              </button>
               <button className="ai-quick-btn" onClick={() => send(t('aiQuickSummaryPrompt'))}>
                 {t('aiQuickSummary')}
               </button>
               <button className="ai-quick-btn" onClick={() => send(t('aiQuickKeyPointsPrompt'))}>
                 {t('aiQuickKeyPoints')}
               </button>
+              <button className="ai-quick-btn" onClick={runNumberAudit}>
+                {numberAuditCopy(lang).action}
+              </button>
+              <button className="ai-quick-btn" onClick={runConsistencyAudit}>
+                {consistencyAuditCopy(lang).action}
+              </button>
+              <button className="ai-quick-btn" onClick={runDocumentAudit}>
+                {documentAuditCopy(lang).action}
+              </button>
+              {!api.readOnly() && (
+                <button
+                  className="ai-quick-btn"
+                  onClick={() =>
+                    send(
+                      lang === 'zh'
+                        ? '请全面审阅这份 PDF，找出矛盾、事实风险、表述不清和待办事项。每个有明确原文依据的问题都添加一条便签批注，并在回复中按页码汇总。'
+                        : lang === 'zh-TW'
+                          ? '請全面審閱這份 PDF，找出矛盾、事實風險、表述不清和待辦事項。每個有明確原文依據的問題都新增一則便利貼註解，並在回覆中按頁碼彙總。'
+                          : 'Review this PDF for contradictions, factual risks, unclear wording, and action items. Add one sticky-note comment for each finding supported by an exact passage, then summarize the findings by page.',
+                    )
+                  }
+                >
+                  {lang === 'zh'
+                    ? '审阅并批注'
+                    : lang === 'zh-TW'
+                      ? '審閱並註解'
+                      : 'Review & comment'}
+                </button>
+              )}
             </div>
           </div>
         )}

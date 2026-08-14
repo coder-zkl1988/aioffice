@@ -766,7 +766,7 @@ function matchEdit(objects: PageTextObj[], edit: TextEditInput): PlannedMatch | 
   // A replacement with no printable characters would remove the matched run and insert
   // nothing back (multi-line splitting skips blank lines) — erasing content is never
   // what a text *edit* means, so refuse instead
-  if (edit.newText.trim() === '') return { reason: 'empty replacement text' }
+  if (edit.newText.trim() === '' && !edit.allowEmpty) return { reason: 'empty replacement text' }
   const oldKey = norm(edit.oldText)
   const matches = objects.filter((o) => overlapRatio(o.bounds, edit.rect) >= 0.5)
   const candidates: PageTextObj[][] = [matches]
@@ -1708,7 +1708,12 @@ async function applyTextEditsInner(
             ? edit
             : { ...edit, origin: undefined, lineLeading: undefined, lineXOffsets: undefined }
           try {
-            if (canReuseFont(eff, newText, matches, objects)) {
+            if (newText === '' && edit.allowEmpty) {
+              for (const match of matches) {
+                m._FPDFPage_RemoveObject(page, match.obj)
+                m._FPDFPageObj_Destroy(match.obj)
+              }
+            } else if (canReuseFont(eff, newText, matches, objects)) {
               const textPtr = utf16Ptr(m, newText)
               const ok = m._FPDFText_SetText(matches[0]!.obj, textPtr)
               m._free(textPtr)

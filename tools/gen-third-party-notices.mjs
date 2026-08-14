@@ -73,6 +73,11 @@ const NOTE = {
     'Copyright (c) Genspark. Licensed under the MIT License.\nhttps://www.npmjs.com/package/@genspark/cli',
 }
 
+const COMPONENT_NOTICE = {
+  'node-unrar-js':
+    'Includes extraction code compiled from the official UnRAR library. Copyright Alexander L. Roshal.\n\nUnRAR source code may be used in any software to handle RAR archives without limitations free of charge, but cannot be used to develop RAR (WinRAR) compatible archiver and to re-create RAR compression algorithm, which is proprietary. Distribution of modified UnRAR source code in separate form or as a part of other software is permitted, provided that full text of this paragraph, starting from "UnRAR source code" words, is included in license, or in documentation if license is not available, and in source code comments of resulting package.',
+}
+
 /** SPDX strings that need a word on which side of a dual license we take */
 const SPDX_NOTE = {
   jszip: 'MIT (dual MIT/GPL-3.0-or-later, used under MIT)',
@@ -269,6 +274,7 @@ for (const [name, { dir, pkg }] of resolved) {
   }
   const notice = noticeText(dir)
   if (notice) out += `\nNOTICE:\n${notice}\n`
+  if (COMPONENT_NOTICE[name]) out += `\nCOMPONENT NOTICE:\n${COMPONENT_NOTICE[name]}\n`
 }
 
 const crates = rustCrates()

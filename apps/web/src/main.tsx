@@ -164,7 +164,14 @@ function App() {
   const visibleRecent = useMemo(() => {
     const normalized = query.trim().toLowerCase()
     return normalized
-      ? recent.filter((file) => file.name.toLowerCase().includes(normalized))
+      ? recent.filter(
+          (file) =>
+            file.name.toLowerCase().includes(normalized) ||
+            file.classification?.labels.some(
+              ({ id, name }) =>
+                id.toLowerCase().includes(normalized) || name.toLowerCase().includes(normalized),
+            ),
+        )
       : recent
   }, [query, recent])
 
@@ -483,6 +490,25 @@ function App() {
                                 ? 'PDF 文档'
                                 : 'Markdown 文档'}
                       </small>
+                      {file.classification && (
+                        <span className="file-labels">
+                          {file.classification.sensitivity !== 'standard' && (
+                            <span className={`sensitivity-${file.classification.sensitivity}`}>
+                              {file.classification.sensitivity === 'internal'
+                                ? '内部'
+                                : file.classification.sensitivity === 'confidential'
+                                  ? '机密'
+                                  : '严格受限'}
+                            </span>
+                          )}
+                          {file.classification.labels.slice(0, 2).map((label) => (
+                            <span key={label.id}>{label.name}</span>
+                          ))}
+                          {file.classification.labels.length > 2 && (
+                            <span>+{file.classification.labels.length - 2}</span>
+                          )}
+                        </span>
+                      )}
                     </span>
                     <time>
                       {new Intl.DateTimeFormat('zh-CN', {

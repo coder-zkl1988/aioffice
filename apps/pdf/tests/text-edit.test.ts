@@ -298,6 +298,15 @@ describe('applyTextEdits', () => {
     expect(result.bytes).toBe(f.bytes)
   })
 
+  it('allows explicit bulk replacements to delete a matched run', async () => {
+    const f = await makeFixture('Remove this')
+    const result = await applyTextEdits(f.bytes, [
+      { ...edit(f, 'Remove this', ''), allowEmpty: true },
+    ])
+    expect(result.skipped).toEqual([])
+    expect(await extractText(result.bytes)).toBe('')
+  })
+
   it('skips edits whose text no longer matches and reports them', async () => {
     const f = await makeFixture('Signature line')
     const result = await applyTextEdits(f.bytes, [edit(f, 'Different text', 'X')])

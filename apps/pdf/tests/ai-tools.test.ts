@@ -59,6 +59,13 @@ function makeDeps(over: Partial<PdfAiDeps> = {}): PdfAiDeps {
     isDeleted: () => false,
     gotoPage: vi.fn(() => true),
     addMarkup: vi.fn(),
+    addReviewComment: vi.fn(),
+    setClassification: vi.fn(),
+    createPdfDocument: vi.fn(async () => ({
+      ok: true as const,
+      savedPath: '/tmp/generated.pdf',
+      pageCount: 2,
+    })),
     formEdits: () => new Map<string, FormValueInput>(),
     applyFormEdit: vi.fn(),
     rotatePage: vi.fn(),
@@ -114,6 +121,48 @@ describe('AGENT_TOOLS definitions', () => {
       const result = await executePdfTool(deps, call(tool.name, { page: 1, start: 1 }))
       expect(result.output).not.toContain('Unknown tool')
     }
+  })
+})
+
+describe('create_pdf_document', () => {
+  it('creates a standalone PDF even when the open document is read-only', async () => {
+    const createPdfDocument = vi.fn(async () => ({
+      ok: true as const,
+      savedPath: '/tmp/proposal.pdf',
+      pageCount: 3,
+    }))
+    const result = await executePdfTool(
+      makeDeps({ readOnly: () => true, createPdfDocument }),
+      call('create_pdf_document', {
+        title: 'Proposal',
+        file_name: 'proposal.pdf',
+        sections: [
+          { type: 'text', heading: 'Overview', body: 'A concise proposal.' },
+          { type: 'bullet_list', heading: 'Next steps', items: ['Review', 'Approve'] },
+        ],
+      }),
+    )
+
+    expect(result.isError).toBeUndefined()
+    expect(result.output).toContain('/tmp/proposal.pdf')
+    expect(createPdfDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Proposal', fileName: 'proposal.pdf' }),
+    )
+  })
+
+  it('rejects malformed structured content before rendering', async () => {
+    const createPdfDocument = vi.fn()
+    const result = await executePdfTool(
+      makeDeps({ createPdfDocument }),
+      call('create_pdf_document', {
+        title: 'Broken table',
+        sections: [{ type: 'line_items', columns: ['A', 'B'], rows: [['A only']] }],
+      }),
+    )
+
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('must match columns')
+    expect(createPdfDocument).not.toHaveBeenCalled()
   })
 })
 
@@ -228,6 +277,118 @@ describe('markup_text', () => {
     )
     expect(ro.isError).toBe(true)
     expect(ro.output).toContain('read-only')
+  })
+})
+
+describe('add_review_comment', () => {
+  it('anchors a review note to an exact passage and jumps to its page', async () => {
+    const deps = makeDeps()
+    const result = await executePdfTool(
+      deps,
+      call('add_review_comment', {
+        page: 1,
+        anchor_text: 'Hello World',
+        subject: 'Verify greeting',
+        comment: 'Confirm this wording before publication.',
+      }),
+    )
+    expect(result.mutated).toBe(true)
+    expect(deps.addReviewComment).toHaveBeenCalledWith({
+      kind: 'note',
+      pageIndex: 0,
+      color: [1, 0.78, 0.13],
+      at: [572, 692],
+      contents: 'Confirm this wording before publication.',
+      author: 'GenOffice AI',
+      subject: 'Verify greeting',
+    })
+    expect(deps.gotoPage).toHaveBeenCalledWith(1)
+  })
+
+  it('keeps the note on the displayed right edge for rotated pages', async () => {
+    const deps = makeDeps({ pageGeom: () => ({ pw: 600, ph: 800, rot: 90 }) })
+    const result = await executePdfTool(
+      deps,
+      call('add_review_comment', {
+        page: 1,
+        anchor_text: 'Hello World',
+        subject: 'Rotated finding',
+        comment: 'Check this rotated page.',
+      }),
+    )
+    expect(result.mutated).toBe(true)
+    expect(deps.addReviewComment).toHaveBeenCalledWith(expect.objectContaining({ at: [22, 772] }))
+  })
+
+  it('requires occurrence for duplicate anchors and selects the requested match', async () => {
+    const deps = makeDeps()
+    const ambiguous = await executePdfTool(
+      deps,
+      call('add_review_comment', {
+        page: 2,
+        anchor_text: 'foo',
+        subject: 'Repeated claim',
+        comment: 'Check the second occurrence.',
+      }),
+    )
+    expect(ambiguous.isError).toBe(true)
+    expect(ambiguous.output).toContain('occurs 2 times')
+    expect(deps.addReviewComment).not.toHaveBeenCalled()
+
+    const selected = await executePdfTool(
+      deps,
+      call('add_review_comment', {
+        page: 2,
+        anchor_text: 'foo',
+        occurrence: 2,
+        subject: 'Repeated claim',
+        comment: 'Check the second occurrence.',
+        author: 'AI reviewer',
+      }),
+    )
+    expect(selected.mutated).toBe(true)
+    expect(deps.addReviewComment).toHaveBeenCalledWith(
+      expect.objectContaining({ pageIndex: 1, author: 'AI reviewer' }),
+    )
+  })
+
+  it('rejects missing anchors, invalid content, and read-only documents', async () => {
+    const deps = makeDeps()
+    const missing = await executePdfTool(
+      deps,
+      call('add_review_comment', {
+        page: 1,
+        anchor_text: 'not on page',
+        subject: 'Finding',
+        comment: 'Review this.',
+      }),
+    )
+    expect(missing.isError).toBe(true)
+    expect(deps.addReviewComment).not.toHaveBeenCalled()
+
+    const empty = await executePdfTool(
+      deps,
+      call('add_review_comment', {
+        page: 1,
+        anchor_text: 'Hello World',
+        subject: '',
+        comment: 'Review this.',
+      }),
+    )
+    expect(empty.isError).toBe(true)
+
+    const readOnly = makeDeps({ readOnly: () => true })
+    const blocked = await executePdfTool(
+      readOnly,
+      call('add_review_comment', {
+        page: 1,
+        anchor_text: 'Hello World',
+        subject: 'Finding',
+        comment: 'Review this.',
+      }),
+    )
+    expect(blocked.isError).toBe(true)
+    expect(readOnly.addReviewComment).not.toHaveBeenCalled()
   })
 })
 

@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { readFile, rename, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 import { BrowserWindow, WebContentsView, app, dialog, ipcMain, shell } from 'electron'
 import type { WebContents } from 'electron'
 import {
@@ -13,21 +13,35 @@ import {
 } from '@genoffice/electron-utils'
 import { createI18n, getUiLang } from '@genoffice/i18n'
 import { gskGenerateImage, hasGskAuth } from '@genoffice/ai-search'
+import { runPdfToolBytes } from '@genoffice/pdf-tools'
 import { PDF_CHANNELS } from '../shared/ipc'
 import type {
+  BulkReplaceTextRequest,
+  BulkReplaceTextResult,
   ExportImagesRequest,
   ExportImagesResult,
   ExtractPagesRequest,
   ExtractPagesResult,
+  InsertBlankPageRequest,
+  InsertBlankPageResult,
   InsertPdfRequest,
   InsertPdfResult,
   PagePreviewRequest,
+  PdfWebResourceRequest,
+  PdfWebResourceResult,
   SavePdfRequest,
   SavePdfResult,
+  RunPdfToolRequest,
+  RunPdfToolResult,
+  PdfTimestampTokenRequest,
   TextEditValidation,
   ValidateTextEditsRequest,
 } from '../shared/ipc'
-import { extractPagesBytes, insertPdfBytes, savePdfToPath } from './save-pdf'
+import { extractPagesBytes, insertBlankPageBytes, insertPdfBytes, savePdfToPath } from './save-pdf'
+import { requestPdfTimestampToken } from './timestamp'
+import { fetchPdfWebResource } from './web-resource'
+import { DesktopMobileScannerService } from './mobile-scanner'
+import { PDF_MOBILE_SCANNER_CHANNELS, isPdfMobileScannerSessionId } from '../shared/mobile-scanner'
 
 const tDlg = createI18n({
   zh: {
@@ -367,6 +381,7 @@ export function requestPdfSaveAs(contents: WebContents, targetPath: string): Pro
 }
 
 let ipcRegistered = false
+const mobileScannerService = new DesktopMobileScannerService()
 
 function registerPdfIpc(): void {
   if (ipcRegistered) return
@@ -473,6 +488,41 @@ function registerPdfIpc(): void {
     },
   )
 
+  ipcMain.handle(
+    PDF_CHANNELS.bulkReplaceText,
+    async (e, request: BulkReplaceTextRequest): Promise<BulkReplaceTextResult> => {
+      const { path, suggestedName, edits } = request ?? {}
+      if (
+        typeof path !== 'string' ||
+        !allowedByWc.get(e.sender.id)?.has(path) ||
+        typeof suggestedName !== 'string' ||
+        !Array.isArray(edits) ||
+        edits.length === 0
+      ) {
+        return { ok: false, error: 'pdf: invalid bulk text replacement request' }
+      }
+      const win =
+        BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined
+      const picked = await showSaveDialogWithMemory(dialog, win, {
+        defaultPath: join(dirname(path), basename(suggestedName)),
+        filters: [{ name: tm('filterPdf'), extensions: ['pdf'] }],
+      })
+      if (picked.canceled || !picked.filePath) return { ok: true, canceled: true }
+      try {
+        const { applyTextEdits } = await import('./text-edit')
+        const result = await applyTextEdits(new Uint8Array(await readFile(path)), edits)
+        const appliedCount = edits.length - result.skipped.length
+        if (appliedCount === 0) {
+          return { ok: false, error: 'No text replacements could be applied' }
+        }
+        await writeFile(picked.filePath, result.bytes)
+        return { ok: true, savedPath: picked.filePath, appliedCount, skipped: result.skipped }
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    },
+  )
+
   ipcMain.handle(PDF_CHANNELS.listEditFonts, async (): Promise<string[]> => {
     const { listEditFonts } = await import('./text-edit')
     return listEditFonts()
@@ -538,6 +588,114 @@ function registerPdfIpc(): void {
       }
     },
   )
+
+  ipcMain.handle(
+    PDF_CHANNELS.insertBlankPage,
+    async (e, request: InsertBlankPageRequest): Promise<InsertBlankPageResult> => {
+      const { path, afterPageIndex } = request ?? {}
+      if (typeof path !== 'string' || !allowedByWc.get(e.sender.id)?.has(path)) {
+        return { ok: false, error: 'pdf: path not granted to this view' }
+      }
+      try {
+        const { merged, count } = await insertBlankPageBytes(
+          new Uint8Array(await readFile(path)),
+          typeof afterPageIndex === 'number' ? afterPageIndex : -1,
+          {
+            count: request.count,
+            pageSize: request.pageSize,
+            orientation: request.orientation,
+          },
+        )
+        const tmp = `${path}.gensave-${process.pid}.tmp`
+        await writeFile(tmp, merged)
+        await rename(tmp, path)
+        return { ok: true, insertedCount: count }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    },
+  )
+
+  ipcMain.handle(
+    PDF_CHANNELS.runTool,
+    async (e, request: RunPdfToolRequest): Promise<RunPdfToolResult> => {
+      const { path, operation } = request ?? {}
+      if (typeof path !== 'string' || !allowedByWc.get(e.sender.id)?.has(path) || !operation) {
+        return { ok: false, error: 'pdf: path not granted to this view' }
+      }
+      try {
+        const outputs = await runPdfToolBytes(new Uint8Array(await readFile(path)), operation)
+        if (outputs.length === 0) return { ok: false, error: 'PDF tool produced no output' }
+        const win =
+          BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined
+        const sourceStem = basename(path, extname(path))
+        if (outputs.length === 1) {
+          const output = outputs[0]!
+          const outputName = output.fileName
+            ? basename(output.fileName)
+            : `${sourceStem}${output.suffix}`
+          const outputExtension = output.extension ?? (extname(outputName) || '.pdf')
+          const picked = await showSaveDialogWithMemory(dialog, win, {
+            defaultPath: join(dirname(path), outputName),
+            filters: [
+              {
+                name:
+                  outputExtension === '.pdf'
+                    ? tm('filterPdf')
+                    : outputExtension.slice(1).toUpperCase(),
+                extensions: [outputExtension.slice(1)],
+              },
+            ],
+          })
+          if (picked.canceled || !picked.filePath) return { ok: true, canceled: true }
+          await writeFile(picked.filePath, output.bytes)
+          return { ok: true, savedPath: picked.filePath, count: 1 }
+        }
+
+        const picked = await showOpenDialogWithMemory(dialog, win, {
+          properties: ['openDirectory', 'createDirectory'],
+        })
+        const directory = picked.filePaths[0]
+        if (picked.canceled || !directory) return { ok: true, canceled: true }
+        for (const output of outputs) {
+          const outputName = output.fileName
+            ? basename(output.fileName)
+            : `${sourceStem}${output.suffix}`
+          await writeFile(join(directory, outputName), output.bytes)
+        }
+        return { ok: true, savedPath: directory, count: outputs.length }
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    },
+  )
+
+  ipcMain.handle(
+    PDF_CHANNELS.fetchWebResource,
+    async (_e, request: PdfWebResourceRequest): Promise<PdfWebResourceResult> =>
+      fetchPdfWebResource(request),
+  )
+
+  ipcMain.handle(
+    PDF_CHANNELS.timestampToken,
+    async (_e, request: PdfTimestampTokenRequest): Promise<Uint8Array> => {
+      if (typeof request?.tsaUrl !== 'string' || !(request.request instanceof Uint8Array)) {
+        throw new Error('Invalid PDF timestamp request')
+      }
+      return requestPdfTimestampToken(request.tsaUrl, request.request)
+    },
+  )
+
+  ipcMain.handle(PDF_MOBILE_SCANNER_CHANNELS.createSession, () =>
+    mobileScannerService.createSession(),
+  )
+  ipcMain.handle(PDF_MOBILE_SCANNER_CHANNELS.pollSession, (_event, sessionId: unknown) => {
+    if (!isPdfMobileScannerSessionId(sessionId)) throw new Error('Invalid scanner session')
+    return mobileScannerService.pollSession(sessionId)
+  })
+  ipcMain.handle(PDF_MOBILE_SCANNER_CHANNELS.closeSession, (_event, sessionId: unknown) => {
+    if (isPdfMobileScannerSessionId(sessionId)) mobileScannerService.closeSession(sessionId)
+  })
 
   ipcMain.handle(
     PDF_CHANNELS.exportImages,

@@ -1,4 +1,35 @@
+import {
+  readPdfClassificationMetadataBytes,
+  type PdfClassificationMetadata,
+} from '@genoffice/pdf-tools'
+
 export type WebFileKind = 'docx' | 'markdown' | 'pdf' | 'pptx' | 'xlsx'
+
+export const WEB_BINARY_FILE_MIMES = {
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  markdown: 'text/markdown',
+  pdf: 'application/pdf',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+} as const
+
+export function generatedBinaryFileKind(extension: string, mime: string): WebFileKind | null {
+  const normalizedExtension = extension.toLowerCase()
+  const normalizedMime = mime.toLowerCase().split(';', 1)[0]?.trim()
+  if (normalizedExtension === '.docx' && normalizedMime === WEB_BINARY_FILE_MIMES.docx)
+    return 'docx'
+  if (
+    (normalizedExtension === '.md' || normalizedExtension === '.markdown') &&
+    normalizedMime === WEB_BINARY_FILE_MIMES.markdown
+  )
+    return 'markdown'
+  if (normalizedExtension === '.pdf' && normalizedMime === WEB_BINARY_FILE_MIMES.pdf) return 'pdf'
+  if (normalizedExtension === '.pptx' && normalizedMime === WEB_BINARY_FILE_MIMES.pptx)
+    return 'pptx'
+  if (normalizedExtension === '.xlsx' && normalizedMime === WEB_BINARY_FILE_MIMES.xlsx)
+    return 'xlsx'
+  return null
+}
 
 export interface StoredWebFile {
   path: string
@@ -7,6 +38,8 @@ export interface StoredWebFile {
   mime: string
   updatedAt: number
   data: ArrayBuffer | string
+  /** Read from the PDF's GenOfficeClassification Info key; never stored separately */
+  classification?: PdfClassificationMetadata
 }
 
 const DB_NAME = 'genoffice-web'
@@ -57,9 +90,16 @@ export async function getStoredFile(path: string): Promise<StoredWebFile | null>
 
 export async function listStoredFiles(kind?: WebFileKind): Promise<StoredWebFile[]> {
   const all = await transact('readonly', (store) => store.getAll())
-  return all
+  const sorted = all
     .filter((file) => !kind || file.kind === kind)
     .sort((left, right) => right.updatedAt - left.updatedAt)
+  return Promise.all(
+    sorted.map(async (file) => {
+      if (file.kind !== 'pdf' || typeof file.data === 'string') return file
+      const classification = await readPdfClassificationMetadataBytes(file.data)
+      return classification ? { ...file, classification } : file
+    }),
+  )
 }
 
 export function queuePendingFile(path: string): void {
@@ -96,7 +136,7 @@ export async function pickBrowserFile(
           : kind === 'pdf'
             ? '.pdf,application/pdf'
             : '.md,.markdown,text/markdown,text/plain'
-  let file: File | null = null
+  let file: File | null
   let handle: FileSystemFileHandle | undefined
 
   if (window.showOpenFilePicker) {
@@ -176,19 +216,24 @@ function downloadBlob(name: string, blob: Blob): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-export async function writeBrowserFile(options: {
+export interface BrowserFileWriteOptions {
   path?: string | null
   name: string
   extension: string
   mime: string
   blob: Blob
   forcePicker?: boolean
-}): Promise<{ path: string; name: string }> {
+  skipPicker?: boolean
+}
+
+export async function writeBrowserFile(
+  options: BrowserFileWriteOptions,
+): Promise<{ path: string; name: string }> {
   let path = options.path ?? null
   let handle = path ? handles.get(path) : undefined
   const name = extensionName(options.name, options.extension)
 
-  if ((!handle || options.forcePicker) && window.showSaveFilePicker) {
+  if (!options.skipPicker && (!handle || options.forcePicker) && window.showSaveFilePicker) {
     try {
       const pickedHandle = await window.showSaveFilePicker({
         suggestedName: name,
@@ -212,6 +257,37 @@ export async function writeBrowserFile(options: {
 
   downloadBlob(name, options.blob)
   return { path: path ?? makeWebPath(name), name }
+}
+
+export async function writeBrowserFiles(
+  options: BrowserFileWriteOptions[],
+): Promise<{ path: string; name: string }[]> {
+  if (options.length <= 1) {
+    return Promise.all(options.map((item) => writeBrowserFile({ ...item, forcePicker: true })))
+  }
+
+  const showDirectoryPicker = (
+    window as Window & {
+      showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>
+    }
+  ).showDirectoryPicker
+  if (showDirectoryPicker) {
+    const directory = await showDirectoryPicker.call(window)
+    return Promise.all(
+      options.map(async (item) => {
+        const name = extensionName(item.name, item.extension)
+        const handle = await directory.getFileHandle(name, { create: true })
+        const writable = await handle.createWritable()
+        await writable.write(item.blob)
+        await writable.close()
+        const path = makeWebPath(name)
+        handles.set(path, handle)
+        return { path, name }
+      }),
+    )
+  }
+
+  return Promise.all(options.map((item) => writeBrowserFile({ ...item, skipPicker: true })))
 }
 
 export function readTheme(): 'light' | 'dark' | 'system' {
