@@ -1158,6 +1158,53 @@ describe('applySaveRequest', () => {
     ).rejects.toThrow(/does not follow/)
   })
 
+  it('appends page duplicates with their source content and orders them', async () => {
+    const bytes = await makePdf([
+      [300, 300],
+      [400, 300],
+      [500, 300],
+    ])
+    const saved = await apply(
+      bytes,
+      request({
+        duplicatedPages: [{ pageIndex: 3, sourcePageIndex: 1 }],
+        pageOrder: [0, 1, 3, 2],
+      }),
+    )
+    const out = await PDFDocument.load(saved)
+    expect(out.getPages().map((p) => p.getWidth())).toEqual([300, 400, 400, 500])
+  })
+
+  it('interleaves blank and duplicated virtual pages in index order', async () => {
+    const bytes = await makePdf([[300, 300]])
+    const saved = await apply(
+      bytes,
+      request({
+        blankPages: [{ pageIndex: 1, width: 100, height: 200 }],
+        // A duplicate of the blank page stays blank; the save copies the appended page.
+        duplicatedPages: [
+          { pageIndex: 2, sourcePageIndex: 0 },
+          { pageIndex: 3, sourcePageIndex: 1 },
+        ],
+        pageOrder: [3, 0, 2, 1],
+      }),
+    )
+    const out = await PDFDocument.load(saved)
+    expect(out.getPages().map((p) => [p.getWidth(), p.getHeight()])).toEqual([
+      [100, 200],
+      [300, 300],
+      [300, 300],
+      [100, 200],
+    ])
+  })
+
+  it('rejects a duplicate whose source is not an earlier page', async () => {
+    const bytes = await makePdf([[300, 300]])
+    await expect(
+      apply(bytes, request({ duplicatedPages: [{ pageIndex: 1, sourcePageIndex: 4 }] })),
+    ).rejects.toThrow(/not an earlier page/)
+  })
+
   it('creates authored text, checkbox and signature fields as real widgets', async () => {
     const bytes = await makePdf([[300, 300]])
     const saved = await apply(

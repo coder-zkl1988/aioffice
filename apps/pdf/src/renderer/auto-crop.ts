@@ -131,10 +131,20 @@ function convertedPdfBox(
 export async function detectPdfAutoCropBoxes(
   sourceDocument: PDFDocumentProxy,
   sourceOptions: PdfAutoCropDetectionOptions,
+  pageIndexes?: number[],
 ): Promise<PdfPageCropBox[]> {
   const options = checkedAutoCropOptions(sourceOptions)
+  const targets =
+    pageIndexes && pageIndexes.length > 0
+      ? [...new Set(pageIndexes)].sort((left, right) => left - right)
+      : Array.from({ length: sourceDocument.numPages }, (_, pageIndex) => pageIndex)
+  for (const pageIndex of targets) {
+    if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= sourceDocument.numPages) {
+      throw new Error(`Crop page ${pageIndex + 1} is outside the document`)
+    }
+  }
   const pageBoxes: PdfPageCropBox[] = []
-  for (let pageIndex = 0; pageIndex < sourceDocument.numPages; pageIndex++) {
+  for (const pageIndex of targets) {
     const page = await sourceDocument.getPage(pageIndex + 1)
     const baseViewport = page.getViewport({ scale: 1 })
     const viewport = page.getViewport({

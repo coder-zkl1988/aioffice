@@ -1,10 +1,15 @@
+import qrcode from 'qrcode-generator'
 import type { StampInput } from '../shared/ipc'
 
 /** Bitmap supersampling factor relative to PDF pt — stays sharp even when enlarged for print */
 const SS = 4
 const MAX_DOCUMENT_WATERMARK_TILES = 10_000
+/** QR byte-mode payload limit, counted in UTF-8 bytes (matches Stirling's Add Stamp limit) */
+export const MAX_QR_CONTENT_BYTES = 1000
+/** Modules of empty border drawn around the QR matrix so scanners can find its edges */
+export const QR_QUIET_ZONE_MODULES = 4
 
-export type WatermarkType = 'text' | 'image'
+export type WatermarkType = 'text' | 'image' | 'qrcode'
 export type WatermarkLayout = 'single' | 'tiled'
 export type WatermarkMargin = 'small' | 'medium' | 'large' | 'x-large'
 export const WATERMARK_MARGIN_FACTORS: Record<WatermarkMargin, number> = {
@@ -180,6 +185,94 @@ function renderTextWatermarkTile(
   return { image: toBase64(canvas), width, height }
 }
 
+/**
+ * Problem that stops a QR watermark from being encoded, or null when the text is usable.
+ * Blank content is rejected for the same reason Stirling rejects it: a resolved placeholder
+ * (e.g. @author with no metadata) can leave nothing to encode.
+ */
+export function validateQrContent(text: string): 'blank' | 'tooLong' | null {
+  if (!text.trim()) return 'blank'
+  if (new TextEncoder().encode(text).length > MAX_QR_CONTENT_BYTES) return 'tooLong'
+  return null
+}
+
+/**
+ * qrcode-generator's byte mode pushes charCode & 0xff per character, so feed the UTF-8 bytes
+ * one character at a time; the encoded payload is then the exact UTF-8 text.
+ */
+function utf8ByteString(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  let out = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    out += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  }
+  return out
+}
+
+/** QR module matrix (true = dark) for the text, or null when it cannot be encoded. */
+function qrModulesForText(text: string): boolean[][] | null {
+  if (validateQrContent(text)) return null
+  try {
+    // Error correction M matches Stirling's Add Stamp, as does the automatic version choice.
+    const code = qrcode(0, 'M')
+    code.addData(utf8ByteString(text), 'Byte')
+    code.make()
+    const count = code.getModuleCount()
+    if (count <= 0) return null
+    return Array.from({ length: count }, (_, row) =>
+      Array.from({ length: count }, (_, column) => code.isDark(row, column)),
+    )
+  } catch {
+    // Too much data for even version 40 at this correction level.
+    return null
+  }
+}
+
+/** Draws the QR matrix at a pixel size of at least `pixelSize`, on a transparent background. */
+function renderQrCanvas(text: string, color: string, pixelSize: number): HTMLCanvasElement | null {
+  const modules = qrModulesForText(text)
+  if (!modules) return null
+  const total = modules.length + QR_QUIET_ZONE_MODULES * 2
+  const cell = Math.max(1, Math.ceil(pixelSize / total))
+  const canvas = document.createElement('canvas')
+  canvas.width = total * cell
+  canvas.height = total * cell
+  const context = canvas.getContext('2d')
+  if (!context) return null
+  context.fillStyle = color
+  for (let row = 0; row < modules.length; row += 1) {
+    for (let column = 0; column < modules.length; column += 1) {
+      if (!modules[row]![column]) continue
+      context.fillRect(
+        (column + QR_QUIET_ZONE_MODULES) * cell,
+        (row + QR_QUIET_ZONE_MODULES) * cell,
+        cell,
+        cell,
+      )
+    }
+  }
+  return canvas
+}
+
+/** Raw base64 PNG for the dialog preview; null when the text cannot be encoded. */
+export function renderQrPreviewBase64(text: string, color: string): string | null {
+  const canvas = renderQrCanvas(text, color, 256)
+  return canvas ? toBase64(canvas) : null
+}
+
+function renderQrWatermarkTile(
+  cfg: WatermarkConfig,
+  text: string,
+  pw: number,
+  ph: number,
+): WatermarkTile | null {
+  // Square stamp sized like the image stamp, clamped to the page's printable area.
+  const size = Math.min(Math.max(8, pw * cfg.sizeRatio), pw * 0.82, ph * 0.82)
+  const canvas = renderQrCanvas(text, cfg.color, Math.max(64, Math.ceil(size * SS)))
+  if (!canvas) return null
+  return { image: toBase64(canvas), width: size, height: size }
+}
+
 function watermarkTile(
   cfg: WatermarkConfig,
   text: string,
@@ -187,6 +280,7 @@ function watermarkTile(
   ph: number,
 ): WatermarkTile | null {
   if (cfg.type === 'text') return renderTextWatermarkTile(cfg, text, pw, ph)
+  if (cfg.type === 'qrcode') return renderQrWatermarkTile(cfg, text, pw, ph)
   if (!cfg.image || !Number.isFinite(cfg.imageAspectRatio) || cfg.imageAspectRatio <= 0) return null
   let height = Math.max(8, pw * cfg.sizeRatio)
   let width = height * cfg.imageAspectRatio
@@ -593,9 +687,11 @@ export function buildStamps(
 
   for (const p of pages) {
     if (watermark && (!watermarkPageIndexes || watermarkPageIndexes.has(p.origIdx))) {
+      // Text and QR stamps encode the resolved text; images carry no text.
       const text =
-        watermark.type === 'text'
-          ? resolveWatermarkText(watermark.text, {
+        watermark.type === 'image'
+          ? ''
+          : resolveWatermarkText(watermark.text, {
               pageNumber: p.displayNo,
               totalPages: total,
               fileName: context.fileName,
@@ -603,7 +699,6 @@ export function buildStamps(
               ...context.metadata,
               uuid: watermark.uuid,
             })
-          : ''
       const key = `${Math.round(p.pw)}x${Math.round(p.ph)}:${text}`
       if (!wmCache.has(key)) wmCache.set(key, watermarkTile(watermark, text, p.pw, p.ph))
       const tile = wmCache.get(key)

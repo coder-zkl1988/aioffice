@@ -799,6 +799,8 @@ export interface PdfRedactionOptions {
   patterns: string[]
   useRegex: boolean
   wholeWord: boolean
+  /** Match case exactly for plain text and regex alike; off by default. */
+  matchCase?: boolean
   color: string
   padding: number
   renderDpi: number
@@ -1162,13 +1164,14 @@ export type PdfToolOperation =
   | ({ kind: 'compare' } & PdfComparisonOptions)
   | { kind: 'extractPages'; pageIndexes: number[] }
   | ({ kind: 'splitSections' } & SplitSectionsOptions)
-  | { kind: 'crop'; mode: 'manual'; margins: CropMargins }
+  | { kind: 'crop'; mode: 'manual'; margins: CropMargins; pageIndexes?: number[] }
   | {
       kind: 'crop'
       mode: 'auto'
       whiteThreshold: number
       padding: number
       pageBoxes?: PdfPageCropBox[]
+      pageIndexes?: number[]
     }
   | {
       kind: 'scale'
@@ -1713,6 +1716,31 @@ export async function insertBlankPageBytes(
   }
 }
 
+/**
+ * Duplicate pages in place: every listed page is copied immediately after its
+ * original, keeping its content and rotation (the page editor's "Duplicate
+ * page"). Duplicating [0, 2] of a three-page document yields the order
+ * [0, 0', 1, 2, 2']. Indexes are 0-based original page indexes; repeating one
+ * yields another copy. An empty selection is an error.
+ */
+export async function duplicatePdfPagesBytes(
+  bytes: Uint8Array | ArrayBuffer,
+  pageIndexes: number[],
+): Promise<Uint8Array> {
+  const document = await PDFDocument.load(bytes, { updateMetadata: false })
+  const indexes = checkedPageIndexes(document.getPageCount(), pageIndexes, {
+    allowDuplicates: true,
+  })
+  // Descending original order keeps the not-yet-copied source indexes stable:
+  // each insertion only shifts pages after its source.
+  for (const pageIndex of [...indexes].sort((a, b) => b - a)) {
+    const [copy] = await document.copyPages(document, [pageIndex])
+    if (!copy) throw new Error(`Page ${pageIndex} could not be copied`)
+    document.insertPage(pageIndex + 1, copy)
+  }
+  return document.save({ useObjectStreams: false })
+}
+
 export async function mergePdfBytes(
   documents: ReadonlyArray<Uint8Array | ArrayBuffer>,
 ): Promise<Uint8Array> {
@@ -2147,16 +2175,32 @@ export async function splitPdfByChaptersBytes(
   return outputs
 }
 
+/** Selected crop pages, 0-based; an omitted or empty list keeps every page. */
+function cropTargetPageIndexes(pageIndexes: number[] | undefined, pageCount: number): number[] {
+  if (!pageIndexes || pageIndexes.length === 0) {
+    return Array.from({ length: pageCount }, (_, pageIndex) => pageIndex)
+  }
+  for (const pageIndex of pageIndexes) {
+    if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= pageCount) {
+      throw new Error(`Crop page ${pageIndex + 1} is outside the document`)
+    }
+  }
+  return [...new Set(pageIndexes)].sort((left, right) => left - right)
+}
+
 export async function cropPdfMarginsBytes(
   bytes: Uint8Array | ArrayBuffer,
   margins: CropMargins,
+  pageIndexes?: number[],
 ): Promise<Uint8Array> {
   const document = await PDFDocument.load(bytes, { updateMetadata: false })
   const top = finiteNonNegative(margins.top, 'top')
   const right = finiteNonNegative(margins.right, 'right')
   const bottom = finiteNonNegative(margins.bottom, 'bottom')
   const left = finiteNonNegative(margins.left, 'left')
-  for (const page of document.getPages()) {
+  const pages = document.getPages()
+  for (const pageIndex of cropTargetPageIndexes(pageIndexes, pages.length)) {
+    const page = pages[pageIndex]!
     const box = page.getCropBox()
     const width = box.width - left - right
     const height = box.height - top - bottom
@@ -2172,15 +2216,23 @@ export async function cropPdfMarginsBytes(
 export async function cropPdfPageBoxesBytes(
   bytes: Uint8Array | ArrayBuffer,
   pageBoxes: PdfPageCropBox[],
+  pageIndexes?: number[],
 ): Promise<Uint8Array> {
   const document = await PDFDocument.load(bytes, { updateMetadata: false })
   const pages = document.getPages()
-  if (pageBoxes.length !== pages.length) {
+  const targets = cropTargetPageIndexes(pageIndexes, pages.length)
+  const selective = pageIndexes !== undefined && pageIndexes.length > 0
+  // Callers either provide a box for every page or, for a selective crop, only
+  // for the selected pages in ascending order.
+  if (pageBoxes.length !== pages.length && !(selective && pageBoxes.length === targets.length)) {
     throw new Error('Auto crop boxes must match the PDF page count')
   }
-  pages.forEach((page, pageIndex) => {
+  const boxAtIndex = (pageIndex: number): PdfPageCropBox | undefined =>
+    pageBoxes.length === pages.length ? pageBoxes[pageIndex] : pageBoxes[targets.indexOf(pageIndex)]
+  for (const pageIndex of targets) {
+    const page = pages[pageIndex]!
     const source = page.getCropBox()
-    const requested = pageBoxes[pageIndex]
+    const requested = boxAtIndex(pageIndex)
     if (!requested) throw new Error(`Auto crop box is missing for page ${pageIndex + 1}`)
     const x = finiteNumber(requested.x, 'x')
     const y = finiteNumber(requested.y, 'y')
@@ -2204,7 +2256,7 @@ export async function cropPdfPageBoxesBytes(
     }
     page.setMediaBox(normalizedX, normalizedY, normalizedWidth, normalizedHeight)
     page.setCropBox(normalizedX, normalizedY, normalizedWidth, normalizedHeight)
-  })
+  }
   return document.save({ useObjectStreams: false })
 }
 
@@ -9032,11 +9084,16 @@ export async function runPdfToolBytes(
       return [
         {
           suffix: '_auto_cropped.pdf',
-          bytes: await cropPdfPageBoxesBytes(bytes, operation.pageBoxes),
+          bytes: await cropPdfPageBoxesBytes(bytes, operation.pageBoxes, operation.pageIndexes),
         },
       ]
     }
-    return [{ suffix: '_cropped.pdf', bytes: await cropPdfMarginsBytes(bytes, operation.margins) }]
+    return [
+      {
+        suffix: '_cropped.pdf',
+        bytes: await cropPdfMarginsBytes(bytes, operation.margins, operation.pageIndexes),
+      },
+    ]
   }
   if (operation.kind === 'scale') {
     return [{ suffix: '_scaled.pdf', bytes: await scalePdfPagesBytes(bytes, operation) }]

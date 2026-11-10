@@ -41,6 +41,7 @@ import {
   deskewPdfPagesBytes,
   deletePdfAttachmentBytes,
   documentMatchesFilterBytes,
+  duplicatePdfPagesBytes,
   extractCbzImageEntries,
   extractPagesBytes,
   flattenPdfPagesBytes,
@@ -408,6 +409,37 @@ describe('extractPagesBytes', () => {
     const extracted = await PDFDocument.load(result)
     expect(extracted.getTitle()).toBe('Selected pages')
     expect(extracted.getPages().map((page) => page.getWidth())).toEqual([300, 100, 300])
+  })
+})
+
+describe('duplicatePdfPagesBytes', () => {
+  it('inserts every copy directly after its source', async () => {
+    const result = await duplicatePdfPagesBytes(await pdfWithWidths([100, 200, 300]), [0, 2])
+    expect(await pageWidths(result)).toEqual([100, 100, 200, 300, 300])
+  })
+
+  it('duplicates a single middle page and keeps its rotation', async () => {
+    const source = await PDFDocument.create()
+    source.addPage([100, 100])
+    const page = source.addPage([200, 100])
+    page.setRotation(degrees(90))
+    source.addPage([300, 100])
+    const result = await duplicatePdfPagesBytes(await source.save(), [1])
+    const out = await PDFDocument.load(result)
+    expect(out.getPages().map((p) => p.getWidth())).toEqual([100, 200, 200, 300])
+    expect(out.getPage(2).getRotation().angle).toBe(90)
+  })
+
+  it('accepts a repeated page and rejects an empty or invalid selection', async () => {
+    expect(
+      await pageWidths(await duplicatePdfPagesBytes(await pdfWithWidths([100, 200]), [1, 1])),
+    ).toEqual([100, 200, 200, 200])
+    await expect(duplicatePdfPagesBytes(await pdfWithWidths([100]), [])).rejects.toThrow(
+      /At least one page/,
+    )
+    await expect(duplicatePdfPagesBytes(await pdfWithWidths([100]), [3])).rejects.toThrow(
+      /invalid page/,
+    )
   })
 })
 
@@ -2474,6 +2506,83 @@ describe('cropPdfMarginsBytes', () => {
     await expect(
       cropPdfPageBoxesBytes(source, [{ x: -1, y: 0, width: 200, height: 200 }]),
     ).rejects.toThrow('outside page 1')
+  })
+
+  it('crops only the listed pages with manual margins', async () => {
+    const bytes = await cropPdfMarginsBytes(
+      await pdfWithWidths([200, 300]),
+      { top: 10, right: 20, bottom: 30, left: 40 },
+      [0],
+    )
+    const pages = (await PDFDocument.load(bytes)).getPages()
+    expect(pages[0]!.getCropBox()).toEqual({ x: 40, y: 30, width: 140, height: 160 })
+    expect(pages[0]!.getMediaBox()).toEqual({ x: 40, y: 30, width: 140, height: 160 })
+    expect(pages[1]!.getCropBox()).toEqual({ x: 0, y: 0, width: 300, height: 200 })
+    expect(pages[1]!.getMediaBox()).toEqual({ x: 0, y: 0, width: 300, height: 200 })
+  })
+
+  it('treats an omitted or empty page list as every page', async () => {
+    const margins = { top: 10, right: 20, bottom: 30, left: 40 }
+    const omitted = await cropPdfMarginsBytes(await pdfWithWidths([200, 300]), margins)
+    const empty = await cropPdfMarginsBytes(await pdfWithWidths([200, 300]), margins, [])
+    for (const bytes of [omitted, empty]) {
+      const pages = (await PDFDocument.load(bytes)).getPages()
+      expect(pages[0]!.getCropBox()).toEqual({ x: 40, y: 30, width: 140, height: 160 })
+      expect(pages[1]!.getCropBox()).toEqual({ x: 40, y: 30, width: 240, height: 160 })
+    }
+  })
+
+  it('rejects crop page indexes outside the document', async () => {
+    const source = await pdfWithWidths([200])
+    await expect(
+      cropPdfMarginsBytes(source, { top: 0, right: 0, bottom: 0, left: 0 }, [1]),
+    ).rejects.toThrow('outside the document')
+    await expect(
+      cropPdfMarginsBytes(source, { top: 0, right: 0, bottom: 0, left: 0 }, [-1]),
+    ).rejects.toThrow('outside the document')
+  })
+
+  it('applies auto crop boxes only to the listed pages', async () => {
+    const source = await PDFDocument.create()
+    source.addPage([200, 200])
+    source.addPage([300, 200])
+    const bytes = await cropPdfPageBoxesBytes(
+      await source.save(),
+      [
+        { x: 20, y: 20, width: 100, height: 100 },
+        { x: 50, y: 40, width: 200, height: 120 },
+      ],
+      [1],
+    )
+    const pages = (await PDFDocument.load(bytes)).getPages()
+    expect(pages[0]!.getCropBox()).toEqual({ x: 0, y: 0, width: 200, height: 200 })
+    expect(pages[1]!.getCropBox()).toEqual({ x: 50, y: 40, width: 200, height: 120 })
+  })
+
+  it('accepts selection-only auto crop boxes and ignores unselected pages', async () => {
+    const source = await PDFDocument.create()
+    source.addPage([200, 200])
+    source.addPage([300, 200])
+    const selective = await cropPdfPageBoxesBytes(
+      await source.save(),
+      [{ x: 50, y: 40, width: 200, height: 120 }],
+      [1],
+    )
+    const selectivePages = (await PDFDocument.load(selective)).getPages()
+    expect(selectivePages[0]!.getCropBox()).toEqual({ x: 0, y: 0, width: 200, height: 200 })
+    expect(selectivePages[1]!.getCropBox()).toEqual({ x: 50, y: 40, width: 200, height: 120 })
+
+    // A box that would be invalid for page 1 must not matter when page 1 is not selected.
+    const ignored = await cropPdfPageBoxesBytes(
+      await source.save(),
+      [
+        { x: -1, y: 0, width: 200, height: 200 },
+        { x: 50, y: 40, width: 200, height: 120 },
+      ],
+      [1],
+    )
+    const ignoredPages = (await PDFDocument.load(ignored)).getPages()
+    expect(ignoredPages[0]!.getCropBox()).toEqual({ x: 0, y: 0, width: 200, height: 200 })
   })
 })
 
@@ -5593,6 +5702,32 @@ describe('runPdfToolBytes', () => {
         padding: 6,
       }),
     ).rejects.toThrow('Auto crop boxes are required')
+  })
+
+  it('dispatches manual crop with a page selection', async () => {
+    const [output] = await runPdfToolBytes(await pdfWithWidths([200, 300]), {
+      kind: 'crop',
+      mode: 'manual',
+      margins: { top: 10, right: 20, bottom: 30, left: 40 },
+      pageIndexes: [1],
+    })
+    const pages = (await PDFDocument.load(output!.bytes)).getPages()
+    expect(pages[0]!.getCropBox()).toEqual({ x: 0, y: 0, width: 200, height: 200 })
+    expect(pages[1]!.getCropBox()).toEqual({ x: 40, y: 30, width: 240, height: 160 })
+  })
+
+  it('dispatches auto crop with a page selection', async () => {
+    const [output] = await runPdfToolBytes(await pdfWithWidths([200, 300]), {
+      kind: 'crop',
+      mode: 'auto',
+      whiteThreshold: 250,
+      padding: 6,
+      pageBoxes: [{ x: 20, y: 30, width: 200, height: 120 }],
+      pageIndexes: [1],
+    })
+    const pages = (await PDFDocument.load(output!.bytes)).getPages()
+    expect(pages[0]!.getCropBox()).toEqual({ x: 0, y: 0, width: 200, height: 200 })
+    expect(pages[1]!.getCropBox()).toEqual({ x: 20, y: 30, width: 200, height: 120 })
   })
 
   it('describes ZIP attachment exports for platform adapters', async () => {

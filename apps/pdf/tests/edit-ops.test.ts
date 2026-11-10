@@ -25,6 +25,7 @@ const empty = (): EditSnapshot => ({
   formFields: [],
   formWidgetEdits: new Map(),
   blankPages: [],
+  duplicates: [],
   rotations: new Map(),
   deleted: new Set(),
   order: null,
@@ -388,6 +389,56 @@ describe('blank pages', () => {
     const { state } = run(first.state, [{ op: 'deletePage', pageIndex: 3 }], ctx({ pageCount: 4 }))
     expect(state.deleted.has(3)).toBe(true)
     expect(state.blankPages).toHaveLength(1)
+  })
+})
+
+describe('duplicate pages', () => {
+  const duplicate = (
+    sourcePageIndex: number,
+    pageIndex: number,
+    rotation?: number,
+    after?: number,
+  ): Op => ({
+    op: 'duplicatePage',
+    sourcePageIndex,
+    pageIndex,
+    ...(rotation ? { rotation } : {}),
+    ...(after !== undefined ? { after } : {}),
+  })
+
+  it('appends a virtual page directly after its source', () => {
+    const { state, plan } = run(empty(), [duplicate(0, 3)])
+    expect(plan.failures).toEqual([])
+    expect(state.duplicates.map((d) => d.input)).toEqual([{ pageIndex: 3, sourcePageIndex: 0 }])
+    expect(state.order).toEqual([0, 3, 1, 2])
+  })
+
+  it('stacks copies of the same source through their `after` anchor', () => {
+    const { state } = run(empty(), [duplicate(1, 3, 90), duplicate(1, 4, undefined, 3)])
+    expect(state.order).toEqual([0, 1, 3, 4, 2])
+    expect(state.rotations.get(3)).toBe(90)
+    expect(state.rotations.has(4)).toBe(false)
+  })
+
+  it('reduces the order bucket alone the same way as the whole snapshot', () => {
+    // Mirrors the React host: each bucket reduces independently from the same base.
+    const plan = planEditOps([duplicate(1, 3), duplicate(1, 4, undefined, 3)], ctx(), newId)
+    expect(plan.failures).toEqual([])
+    const base = empty()
+    expect(reduceBucket('order', base.order, plan.ops, base)).toEqual([0, 1, 3, 4, 2])
+  })
+
+  it('rejects a stale pageIndex, an invalid source and a bad rotation', () => {
+    expect(run(empty(), [duplicate(0, 5)]).plan.failures[0]!.error).toMatch(/next page index/)
+    expect(run(empty(), [duplicate(9, 3)]).plan.failures[0]!.error).toMatch(/out of range/)
+    expect(run(empty(), [duplicate(0, 3, 45)]).plan.failures[0]!.error).toMatch(/rotation/)
+  })
+
+  it('undoes as one snapshot and can be deleted again like any page', () => {
+    const first = run(empty(), [duplicate(0, 3)])
+    expect(first.state.duplicates).toHaveLength(1)
+    const del = run(first.state, [{ op: 'deletePage', pageIndex: 3 }], ctx({ pageCount: 4 }))
+    expect(del.state.deleted.has(3)).toBe(true)
   })
 })
 

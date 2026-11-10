@@ -311,6 +311,31 @@ describe('searchPatternsInIndex', () => {
     expect(searchPatternsInIndex(index, [' ', ''], false, false)).toEqual([])
   })
 
+  it('matches plain text case-insensitively unless case sensitivity is requested', () => {
+    const index = [
+      entry('Secret and SECRET and secret', [{ start: 0, end: 24, x: 0, y: 0, w: 240, h: 10 }]),
+    ]
+    expect(searchPatternsInIndex(index, ['secret'], false, false)).toHaveLength(3)
+    expect(searchPatternsInIndex(index, ['Secret'], false, false, true)).toHaveLength(1)
+    expect(searchPatternsInIndex(index, ['SECRET'], false, false, true)).toHaveLength(1)
+    expect(searchPatternsInIndex(index, ['sEcReT'], false, false, true)).toEqual([])
+  })
+
+  it('honors case sensitivity for regular expressions', () => {
+    const index = [
+      entry('ticket FS-01 and fs-02 here', [{ start: 0, end: 27, x: 0, y: 0, w: 270, h: 10 }]),
+    ]
+    expect(searchPatternsInIndex(index, ['[A-Z]{2}-\\d+'], true, false)).toHaveLength(2)
+    expect(searchPatternsInIndex(index, ['[A-Z]{2}-\\d+'], true, false, true)).toHaveLength(1)
+    expect(searchPatternsInIndex(index, ['[a-z]{2}-\\d+'], true, false, true)).toHaveLength(1)
+  })
+
+  it('combines case sensitivity with whole-word matching', () => {
+    const index = [entry('Cat cat cats', [{ start: 0, end: 12, x: 0, y: 0, w: 120, h: 10 }])]
+    expect(searchPatternsInIndex(index, ['cat'], false, true, true)).toHaveLength(1)
+    expect(searchPatternsInIndex(index, ['cat'], false, true)).toHaveLength(2)
+  })
+
   it('uses the complete text item and rotation-aware bounds to avoid partial leaks', () => {
     const index = [
       entry('secret', [

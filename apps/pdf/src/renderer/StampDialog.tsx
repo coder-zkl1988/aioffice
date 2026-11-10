@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement } from 'react'
 import {
   DEFAULT_HEADER_FOOTER,
@@ -6,7 +6,9 @@ import {
   WATERMARK_MARGIN_FACTORS,
   createWatermarkUuid,
   parseStampPageRange,
+  renderQrPreviewBase64,
   resolveWatermarkText,
+  validateQrContent,
 } from './stamps'
 import type {
   HeaderFooterFont,
@@ -159,11 +161,13 @@ export function StampDialog({
         hf.footerCenter,
         hf.footerRight,
       ].some((s) => s.trim()))
-  const wmUsed = wm.type === 'text' ? wm.text.trim().length > 0 : wm.image.length > 0
+  const wmUsed = wm.type === 'image' ? wm.image.length > 0 : wm.text.trim().length > 0
+  const qrIssue = wm.type === 'qrcode' ? validateQrContent(wm.text) : null
   const selectedPages = parseStampPageRange(pageRange, totalPages)
   const selectedHeaderFooterPages = parseStampPageRange(headerFooterPageRange, totalPages)
   const canApply =
     (wmUsed || hfUsed) &&
+    qrIssue !== 'tooLong' &&
     (!wmUsed || selectedPages !== null) &&
     (!hfUsed || selectedHeaderFooterPages !== null)
   const previewText = resolveWatermarkText(wm.text, {
@@ -174,6 +178,11 @@ export function StampDialog({
     ...metadata,
     uuid: wm.uuid,
   })
+  // The QR encodes the resolved tokens, so the preview matches the page it will land on.
+  const qrPreviewBase64 = useMemo(
+    () => (wm.type === 'qrcode' ? renderQrPreviewBase64(previewText, wm.color) : null),
+    [previewText, wm.color, wm.type],
+  )
 
   useLayoutEffect(() => {
     if (wm.layout !== 'single') return
@@ -377,6 +386,12 @@ export function StampDialog({
                 >
                   {t('signImage')}
                 </button>
+                <button
+                  className={`pdf-sign-tab${wm.type === 'qrcode' ? ' active' : ''}`}
+                  onClick={() => setWm({ ...wm, type: 'qrcode' })}
+                >
+                  {t('watermarkQrcode')}
+                </button>
               </div>
             </div>
             <div className="pdf-field pdf-wm-segment-field">
@@ -396,18 +411,7 @@ export function StampDialog({
                 </button>
               </div>
             </div>
-            {wm.type === 'text' ? (
-              <label className="pdf-field pdf-tools-field-column">
-                <span>{t('watermarkText')}</span>
-                <textarea
-                  className="pdf-modal-input pdf-wm-textarea"
-                  value={wm.text}
-                  placeholder={t('watermarkPlaceholder')}
-                  autoFocus
-                  onChange={(e) => setWm({ ...wm, text: e.target.value })}
-                />
-              </label>
-            ) : (
+            {wm.type === 'image' ? (
               <div className="pdf-field pdf-wm-image-field">
                 <span>{t('watermarkImage')}</span>
                 <input
@@ -433,6 +437,27 @@ export function StampDialog({
                       : t('watermarkChooseImage')}
                 </button>
                 {imageName && <em className="pdf-wm-file-name">{imageName}</em>}
+              </div>
+            ) : (
+              <label className="pdf-field pdf-tools-field-column">
+                <span>{wm.type === 'qrcode' ? t('watermarkQrContent') : t('watermarkText')}</span>
+                <textarea
+                  className="pdf-modal-input pdf-wm-textarea"
+                  value={wm.text}
+                  placeholder={
+                    wm.type === 'qrcode' ? t('watermarkQrPlaceholder') : t('watermarkPlaceholder')
+                  }
+                  autoFocus
+                  onChange={(e) => setWm({ ...wm, text: e.target.value })}
+                />
+                {wm.type === 'qrcode' && (
+                  <div className="pdf-sign-hint">{t('watermarkQrHint')}</div>
+                )}
+              </label>
+            )}
+            {qrIssue === 'tooLong' && (
+              <div className="pdf-sign-hint pdf-wm-error" role="alert">
+                {t('watermarkQrTooLong')}
               </div>
             )}
             {imageError && (
@@ -478,7 +503,7 @@ export function StampDialog({
               <input
                 type="range"
                 min={4}
-                max={wm.type === 'image' ? 50 : 22}
+                max={wm.type === 'text' ? 22 : 50}
                 value={Math.round(wm.sizeRatio * 100)}
                 onChange={(e) => setWm({ ...wm, sizeRatio: Number(e.target.value) / 100 })}
               />
@@ -602,7 +627,7 @@ export function StampDialog({
                 </label>
               </div>
             )}
-            {wm.type === 'text' && (
+            {wm.type !== 'image' && (
               <>
                 <div className="pdf-field">
                   <span>{t('drawColor')}</span>
@@ -659,6 +684,10 @@ export function StampDialog({
                 >
                   {wm.type === 'image' && wm.image ? (
                     <img src={`data:image/png;base64,${wm.image}`} alt="" />
+                  ) : wm.type === 'qrcode' && qrPreviewBase64 ? (
+                    <img src={`data:image/png;base64,${qrPreviewBase64}`} alt="" />
+                  ) : wm.type === 'qrcode' ? (
+                    t('watermarkQrcode')
                   ) : (
                     previewText ||
                     (wm.type === 'image' ? t('watermarkChooseImage') : t('watermarkPlaceholder'))

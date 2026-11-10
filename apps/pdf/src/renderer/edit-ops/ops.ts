@@ -25,7 +25,13 @@ import type { LocalImageEdit } from '../ImageEditLayer'
 import { imageRectKey } from '../ImageEditLayer'
 import type { LocalTextEdit, LocalTextInsert } from '../text-edit-preview'
 import type { SavedNoteAnnot } from '../note-threads'
-import type { LocalBlankPage, LocalFormField, SavedMarkupAnnot, StampConfig } from '../edit-state'
+import type {
+  LocalBlankPage,
+  LocalDuplicatePage,
+  LocalFormField,
+  SavedMarkupAnnot,
+  StampConfig,
+} from '../edit-state'
 import { GuidedError, register, type Op, type OpContext } from './registry'
 
 type Rect = [number, number, number, number]
@@ -811,6 +817,47 @@ register({
       blankPages: [...s.blankPages, blank],
       order: [...base.slice(0, at), idx, ...base.slice(at)],
     }
+  },
+})
+
+register({
+  name: 'duplicatePage',
+  touches: ['duplicates', 'order', 'rotations'],
+  additive: true,
+  validate(op, ctx) {
+    pageIndex(op.sourcePageIndex, ctx, 'sourcePageIndex')
+    // `after` chains several copies of one page inside a batch (the second copy
+    // is anchored to the first); it must be the source or an earlier copy.
+    if (op.after !== undefined) pageIndex(op.after, ctx, 'after')
+    if (op.pageIndex !== ctx.pageCount)
+      throw new GuidedError(
+        `pageIndex must be the next page index (${ctx.pageCount}): duplicated pages are appended to the document`,
+      )
+    if (op.rotation !== undefined && ![0, 90, 180, 270].includes(op.rotation as number))
+      throw new GuidedError('"rotation" must be 0, 90, 180 or 270')
+  },
+  advance(_op, ctx) {
+    return { pageCount: ctx.pageCount + 1 }
+  },
+  apply(op, s) {
+    const idx = op.pageIndex as number
+    const source = op.sourcePageIndex as number
+    const copy: LocalDuplicatePage = {
+      id: id(op),
+      input: { pageIndex: idx, sourcePageIndex: source },
+    }
+    const order = s.order ? [...s.order] : Array.from({ length: idx }, (_, i) => i)
+    // The copy lands directly after its anchor: the source, or a sibling copy
+    // chained through `after`. Position-based, so reducing the order bucket alone
+    // matches the whole-snapshot reduction.
+    const anchor = (op.after as number | undefined) ?? source
+    const at = order.indexOf(anchor)
+    order.splice(at < 0 ? order.length : at + 1, 0, idx)
+    // A copy keeps the rotation the source has in the session at this moment.
+    const rotations = new Map(s.rotations)
+    const rotation = op.rotation as number | undefined
+    if (rotation) rotations.set(idx, rotation)
+    return { duplicates: [...s.duplicates, copy], order, rotations }
   },
 })
 

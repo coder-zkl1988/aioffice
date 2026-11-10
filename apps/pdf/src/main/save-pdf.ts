@@ -30,6 +30,7 @@ import { applyAttachments } from './pdf-attachments'
 import type {
   BlankPageInput,
   DrawingInput,
+  DuplicatePageInput,
   OutlineEntryInput,
   FormFieldInput,
   FormWidgetEditInput,
@@ -48,7 +49,7 @@ import { stampDrawPlacement } from '../shared/ipc'
 import { applyPdfClassificationMetadata, removeEmptyPdfSignatureFields } from '@genoffice/pdf-tools'
 import type { InsertBlankPageOptions, PdfPageSize } from '@genoffice/pdf-tools'
 import { writePdfAtomically } from './atomic-write'
-import { redactPdf } from './redaction'
+import { redactPdf, verifyRedactionRegions } from './redaction'
 
 const num = (v: number) => Math.round(v * 100) / 100
 const STATIC_FORM_FILLS_KEY = PDFName.of('GenOfficeStaticFormFills')
@@ -1547,6 +1548,27 @@ async function verifyContentEdits(
     })
     failures.push(...(await verifyImageEdits(bytes, remapped, savedOutputPassword(request))))
   }
+  if ((request.redactions?.length ?? 0) > 0) {
+    // A redaction the native apply could not confirm is a failed redaction, not a
+    // successful save: the caller withholds the copy instead of writing text the
+    // user believes is gone. Its own prefix keeps the notice honest — nothing was
+    // written, and reverting edits is not the remedy.
+    const remapped = (request.redactions ?? []).flatMap((region) => {
+      const pageIndex = finalPageIndex(request, region.pageIndex)
+      return pageIndex === null ? [] : [{ pageIndex, rect: region.rect }]
+    })
+    const unverified =
+      remapped.length === 0
+        ? []
+        : await verifyRedactionRegions(bytes, remapped, savedOutputPassword(request))
+    if (unverified.length > 0) {
+      const pages = [...new Set(unverified.map((f) => f.pageIndex + 1))].sort((a, b) => a - b)
+      // "redact-verify-failed pages=…" is parsed by the renderer to localize the notice
+      throw new Error(
+        `redact-verify-failed pages=${pages.join(',')}: ${unverified[0]!.reason}; the file was not written`,
+      )
+    }
+  }
   if (failures.length > 0) {
     const pages = [...new Set(failures.map((f) => f.pageIndex + 1))].sort((a, b) => a - b)
     // "save-verify-failed pages=…" is parsed by the renderer to localize the notice
@@ -1579,17 +1601,54 @@ export interface AppliedSaveRequest {
   skippedImageEdits: ImageEditFailure[]
 }
 
-async function appendBlankPages(bytes: Uint8Array, blanks: BlankPageInput[]): Promise<Uint8Array> {
+/**
+ * Append the session's virtual pages — blank pages and duplicated pages — in
+ * pageIndex order. Both are addressed by indices past the document's pages, and
+ * a duplicate copies its source page (which always precedes it) so every later
+ * page-addressed stage treats the copy like any other page.
+ */
+async function appendVirtualPages(
+  bytes: Uint8Array,
+  blanks: BlankPageInput[],
+  duplicates: DuplicatePageInput[],
+): Promise<Uint8Array> {
+  if (blanks.length === 0 && duplicates.length === 0) return bytes
   const doc = await PDFDocument.load(bytes, { updateMetadata: false })
-  for (const blank of [...blanks].sort((a, b) => a.pageIndex - b.pageIndex)) {
-    if (blank.pageIndex !== doc.getPageCount()) {
+  const virtual: ({ pageIndex: number } & (
+    { kind: 'blank'; blank: BlankPageInput } | { kind: 'duplicate'; duplicate: DuplicatePageInput }
+  ))[] = [
+    ...blanks.map((blank) => ({
+      kind: 'blank' as const,
+      pageIndex: blank.pageIndex,
+      blank,
+    })),
+    ...duplicates.map((duplicate) => ({
+      kind: 'duplicate' as const,
+      pageIndex: duplicate.pageIndex,
+      duplicate,
+    })),
+  ].sort((a, b) => a.pageIndex - b.pageIndex)
+  for (const entry of virtual) {
+    if (entry.pageIndex !== doc.getPageCount()) {
       throw new Error(
-        `Blank page index ${blank.pageIndex} does not follow the document (${doc.getPageCount()} pages)`,
+        `Virtual page index ${entry.pageIndex} does not follow the document (${doc.getPageCount()} pages)`,
       )
     }
-    if (!(blank.width > 0) || !(blank.height > 0))
-      throw new Error('Blank page needs a positive size')
-    doc.addPage([blank.width, blank.height])
+    if (entry.kind === 'blank') {
+      const { width, height } = entry.blank
+      if (!(width > 0) || !(height > 0)) throw new Error('Blank page needs a positive size')
+      doc.addPage([width, height])
+      continue
+    }
+    const source = entry.duplicate.sourcePageIndex
+    if (!Number.isInteger(source) || source < 0 || source >= doc.getPageCount()) {
+      throw new Error(
+        `Duplicate page source ${source} is not an earlier page (${doc.getPageCount()} pages)`,
+      )
+    }
+    const [copy] = await doc.copyPages(doc, [source])
+    if (!copy) throw new Error(`Page ${source} could not be copied`)
+    doc.addPage(copy)
   }
   return doc.save({ useObjectStreams: false })
 }
@@ -1631,10 +1690,13 @@ export async function applySaveRequest(
     const { applyAnnotDeletes } = await import('./annot-delete')
     bytes = await applyAnnotDeletes(bytes, request.annotDeletes)
   }
-  if (request.blankPages && request.blankPages.length > 0) {
-    // Blank pages exist before any stage that addresses pages, so edits made on them
-    // in the session (text, drawings, fields) land like on any other page
-    bytes = await appendBlankPages(bytes, request.blankPages)
+  if (
+    (request.blankPages && request.blankPages.length > 0) ||
+    (request.duplicatedPages && request.duplicatedPages.length > 0)
+  ) {
+    // Virtual pages exist before any stage that addresses pages, so edits made on
+    // them in the session (text, drawings, fields) land like on any other page
+    bytes = await appendVirtualPages(bytes, request.blankPages ?? [], request.duplicatedPages ?? [])
   }
   if (request.textEdits && request.textEdits.length > 0) {
     // Content-stream rewrite must land before pdf-lib touches the bytes: everything

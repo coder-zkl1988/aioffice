@@ -123,7 +123,7 @@ import { loadPdfJsonImportFonts } from './json-to-pdf'
 import { analyzePdfContentFilter } from './filter-pages'
 import { compressionImageQuality, renderFlattenedPdfPages } from './flatten-pdf'
 import { renderComparedPdfPages } from './compare-pdf'
-import { renderRedactedPdfPages } from './redact-pdf'
+import { renderRedactedPdfPages, verifyRedactedCopy } from './redact-pdf'
 import { resolvePdfCommentAnchors } from './pdf-comments'
 import { renderPdfPagesAsImages } from './pdf-to-images'
 import { renderPdfToWebm, type PdfVideoProgress } from './pdf-to-video'
@@ -153,8 +153,10 @@ import type { PdfViewState, ZoomAnchor } from './view-state'
 import { LinkLayer } from './LinkLayer'
 import { OutlinePanel } from './OutlinePanel'
 import { CommentsPanel, type CommentEntry } from './CommentsPanel'
+import { commentsCsvFileName, commentsToCsv } from './comments-csv'
 import { ComparePanel } from './ComparePanel'
 import { compareDocuments, type CompareResult, type PageText } from './compare-text'
+import { compressionShrank } from './compress-feedback'
 import { AttachmentsPanel, type AttachmentRow } from './AttachmentsPanel'
 import type { OutlineNode } from './OutlinePanel'
 import {
@@ -165,6 +167,7 @@ import {
 } from './heading-outline'
 import { filterPageParity, maySpoolOriginal, printPdf, type PageParity } from './print'
 import { readFileBytes } from './file-bytes'
+import { isProbablyDamagedPdf } from './damaged-pdf'
 import type {
   PdfEncryptionInput,
   PdfPermissions,
@@ -225,7 +228,11 @@ import {
   spliceCharColors,
 } from './color-runs'
 import { platformShortcuts, type Lang } from '@genoffice/i18n'
-import { pdfaPreservationReportBytes, timestampPdfBytes } from '@genoffice/pdf-tools'
+import {
+  pdfaPreservationReportBytes,
+  redactSelectedPdfPagesBytes,
+  timestampPdfBytes,
+} from '@genoffice/pdf-tools'
 import type { PdfClassificationMetadata, PdfOrientation, PdfPageSize } from '@genoffice/pdf-tools'
 import type { CharStyle } from './color-runs'
 import {
@@ -326,6 +333,7 @@ import type {
   SavedMarkupAnnot,
   LocalAnnotDelete,
   LocalBlankPage,
+  LocalDuplicatePage,
   LocalFormField,
   LocalNoteEdit,
   EditSnapshot,
@@ -710,6 +718,18 @@ function isPdfToolRibbonTab(tab: RibbonTab): tab is PdfToolRibbonTab {
   return tab in PDF_TOOL_RIBBON_GROUPS
 }
 
+/** Download generated text (CSV export etc.) without going through the document save path */
+function downloadTextFile(name: string, text: string, mime: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type: mime }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = name
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
 /** The file's bytes before and after a change written to it at once */
 interface WrittenStep {
   before: ArrayBuffer
@@ -741,8 +761,11 @@ export default function App() {
   const [failedPages, setFailedPages] = useState<Set<number>>(new Set())
   /** the message of a failed open, shown with the placeholder's loadError line */
   const [openError, setOpenError] = useState<string | null>(null)
-  // Blank pages added this session live past the document's pages as virtual original
-  // indices (see BlankPageInput); allSizes is the page table every index lookup uses
+  /** the failed bytes look structurally broken (not encrypted): offer Repair */
+  const [openDamaged, setOpenDamaged] = useState(false)
+  // Blank and duplicated pages added this session live past the document's pages as
+  // virtual original indices (see BlankPageInput / DuplicatePageInput); allSizes is the
+  // page table every index lookup uses
   const [blankPages, setBlankPages] = useState<LocalBlankPage[]>([])
   const blankPagesRef = useRef(blankPages)
   blankPagesRef.current = blankPages
@@ -750,21 +773,52 @@ export default function App() {
     blankPagesRef.current = next
     setBlankPages(next)
   }
+  const [duplicates, setDuplicates] = useState<LocalDuplicatePage[]>([])
+  const duplicatesRef = useRef(duplicates)
+  duplicatesRef.current = duplicates
+  const commitDuplicates = (next: LocalDuplicatePage[]) => {
+    duplicatesRef.current = next
+    setDuplicates(next)
+  }
   const allSizes = useMemo(() => {
-    if (blankPages.length === 0) return sizes
+    if (blankPages.length === 0 && duplicates.length === 0) return sizes
     const table = [...sizes]
     for (const b of blankPages)
       table[b.input.pageIndex] = { width: b.input.width, height: b.input.height }
+    // A copy always follows its source, so resolving in ascending index order finds
+    // the source size already in the table (blanks are filled in first either way).
+    for (const d of [...duplicates].sort((a, b) => a.input.pageIndex - b.input.pageIndex)) {
+      const source = table[d.input.sourcePageIndex]
+      table[d.input.pageIndex] = source ? { ...source } : { width: 595.28, height: 841.89 }
+    }
     return table
-  }, [sizes, blankPages])
-  const isBlankPage = (origIdx: number) => origIdx >= sizes.length
+  }, [sizes, blankPages, duplicates])
+  /** The document page a virtual page shows: itself for real pages, the copied page for
+      a duplicate, and null for a blank (or a copy of one). Follows duplicate chains. */
+  const originPageOf = (origIdx: number): number | null => {
+    let cur = origIdx
+    for (let guard = 0; guard <= duplicatesRef.current.length; guard++) {
+      if (cur < sizes.length) return cur
+      const dup = duplicatesRef.current.find((d) => d.input.pageIndex === cur)
+      if (!dup) return null
+      cur = dup.input.sourcePageIndex
+    }
+    return null
+  }
+  const isBlankPage = (origIdx: number) => originPageOf(origIdx) === null
+  /** 1-based pdf.js page number that draws this page; null for a blank page */
+  const contentPageNo = (origIdx: number): number | null => {
+    const origin = originPageOf(origIdx)
+    return origin === null ? null : origin + 1
+  }
   // Ref-based views for code that runs before React re-renders (AI tool turns): a blank
   // page committed a moment ago is already addressable
   const blankSizeNow = (origIdx: number): PageSize | undefined => {
     const b = blankPagesRef.current.find((x) => x.input.pageIndex === origIdx)
     return b ? { width: b.input.width, height: b.input.height } : undefined
   }
-  const pageCountNow = () => sizes.length + blankPagesRef.current.length
+  const pageCountNow = () =>
+    sizes.length + blankPagesRef.current.length + duplicatesRef.current.length
   const [pageOrigins, setPageOrigins] = useState<[number, number][]>([])
   const [pageUserUnits, setPageUserUnits] = useState<number[]>([])
   const [baseRots, setBaseRots] = useState<number[]>([])
@@ -1431,6 +1485,8 @@ export default function App() {
   const [blankPageSize, setBlankPageSize] = useState<PdfPageSize>('KEEP')
   const [blankPageOrientation, setBlankPageOrientation] = useState<PdfOrientation>('portrait')
   const [toolDlg, setToolDlg] = useState<PdfToolKind | null>(null)
+  /** The last compress run wrote a file no smaller than its source; the dialog stays open to say so */
+  const [toolCompressNoShrink, setToolCompressNoShrink] = useState(false)
   const [toolBusy, setToolBusy] = useState(false)
   const [ocrProgress, setOcrProgress] = useState<PdfOcrProgress | null>(null)
   const [videoProgress, setVideoProgress] = useState<PdfVideoProgress | null>(null)
@@ -1541,17 +1597,22 @@ export default function App() {
   const pageGeom = useCallback(
     (origIdx: number): PageGeom => {
       const s = allSizes[origIdx] ?? blankSizeNow(origIdx)!
-      const [x0, y0] = pageOrigins[origIdx] ?? [0, 0]
+      // A copy draws the source page's content, so it inherits that page's
+      // intrinsic rotation, origin offset and user unit; only the session's own
+      // turns are keyed by the virtual index.
+      const origin = originPageOf(origIdx) ?? origIdx
+      const [x0, y0] = pageOrigins[origin] ?? [0, 0]
       return {
         pw: s.width,
         ph: s.height,
-        rot: (baseRots[origIdx] ?? 0) + rotDelta(origIdx),
+        rot: (baseRots[origin] ?? 0) + rotDelta(origIdx),
         x0,
         y0,
-        userUnit: pageUserUnits[origIdx] ?? 1,
+        userUnit: pageUserUnits[origin] ?? 1,
       }
     },
-    [allSizes, baseRots, pageOrigins, pageUserUnits, rotDelta],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- originPageOf reads the duplicates ref mirror
+    [allSizes, baseRots, pageOrigins, pageUserUnits, rotDelta, duplicates],
   )
   /** Latest geometry for async pipelines that must not rebind on rotation (OCR) */
   const pageGeomRef = useRef(pageGeom)
@@ -1652,6 +1713,7 @@ export default function App() {
         formControlRefs.current.clear()
         commitFormFields([])
         commitBlankPages([])
+        commitDuplicates([])
         setFormWidgetEdits(new Map())
         setFormDesignTool(null)
         setFormDesignPreview(false)
@@ -1846,16 +1908,36 @@ export default function App() {
         // write was in flight stay pending, with page indices remapped through the
         // saved deletions/reorder (a page missing from pageMap is gone from the file).
         const remap = new Map(saved.pageMap)
-        // Blank pages added while the write was in flight keep their edits: their virtual
-        // indices move past the reloaded document's pages and remap like any other page
-        const inFlightBlanks = blankPagesRef.current
-          .filter((b) => !saved.blankPageIds.has(b.id))
-          .sort((a, b) => a.input.pageIndex - b.input.pageIndex)
-          .map((b, k) => {
-            const pageIndex = loaded.numPages + k
-            remap.set(b.input.pageIndex, pageIndex)
-            return { ...b, input: { ...b.input, pageIndex } }
+        // Virtual pages (blanks and copies) added while the write was in flight keep
+        // their edits: their indices move past the reloaded document's pages and remap
+        // like any other page. Both kinds share one virtual index space, so they are
+        // renumbered together in index order — a copy's source always precedes it.
+        const inFlightVirtual = [
+          ...blankPagesRef.current
+            .filter((b) => !saved.blankPageIds.has(b.id))
+            .map((b) => ({ kind: 'blank' as const, index: b.input.pageIndex, blank: b })),
+          ...duplicatesRef.current
+            .filter((d) => !saved.duplicatePageIds.has(d.id))
+            .map((d) => ({ kind: 'duplicate' as const, index: d.input.pageIndex, duplicate: d })),
+        ].sort((a, b) => a.index - b.index)
+        const inFlightBlanks: LocalBlankPage[] = []
+        const inFlightDuplicates: LocalDuplicatePage[] = []
+        let nextVirtualIndex = loaded.numPages
+        for (const v of inFlightVirtual) {
+          const pageIndex = nextVirtualIndex++
+          remap.set(v.index, pageIndex)
+          if (v.kind === 'blank') {
+            inFlightBlanks.push({ ...v.blank, input: { ...v.blank.input, pageIndex } })
+            continue
+          }
+          // A copy whose source the save removed has nothing left to show
+          const source = remap.get(v.duplicate.input.sourcePageIndex)
+          if (source === undefined) continue
+          inFlightDuplicates.push({
+            ...v.duplicate,
+            input: { ...v.duplicate.input, pageIndex, sourcePageIndex: source },
           })
+        }
         setOutline((prev) => (prev ? remapOutlinePages(prev, remap) : prev))
         // Redaction marks are deliberately omitted from ordinary saves. Keep them
         // through the reload, remapping their original page indices if this save
@@ -1933,6 +2015,7 @@ export default function App() {
           }),
         )
         commitBlankPages(inFlightBlanks)
+        commitDuplicates(inFlightDuplicates)
         commitFormFields(
           formFieldsRef.current.flatMap((f) => {
             if (saved.formFieldIds.has(f.id)) return []
@@ -2062,6 +2145,7 @@ export default function App() {
       try {
         setFilePath(path)
         setOpenError(null)
+        setOpenDamaged(false)
         // A newly opened file starts outside the autosave gate
         savedOnceRef.current = false
         await loadDoc(path, null)
@@ -2099,6 +2183,15 @@ export default function App() {
           return
         }
         console.error('[pdf] open failed:', err)
+        // Distinguish a damaged structure from a wrong password: an encrypted
+        // file keeps its header and EOF marker, while broken bytes lose one.
+        let damaged = false
+        try {
+          damaged = isProbablyDamagedPdf(await readFileBytes(window.pdfApi, path))
+        } catch {
+          /* best-effort: a failed re-read just skips the Repair offer */
+        }
+        setOpenDamaged(damaged)
         setOpenError(err instanceof Error ? err.message : String(err))
         setStatus('error')
       }
@@ -2563,6 +2656,7 @@ export default function App() {
     stampCfg !== null ||
     formEdits.size > 0 ||
     blankPages.length > 0 ||
+    duplicates.length > 0 ||
     formWidgetEdits.size > 0 ||
     rotations.size > 0 ||
     deleted.size > 0 ||
@@ -2624,6 +2718,7 @@ export default function App() {
     formEdits: formEditsRef.current,
     formFields: formFieldsRef.current,
     blankPages: blankPagesRef.current,
+    duplicates: duplicatesRef.current,
     formWidgetEdits: formWidgetEditsRef.current,
     rotations: rotationsRef.current,
     deleted: deletedRef.current,
@@ -2724,6 +2819,7 @@ export default function App() {
     }
     if (touched.has('formFields')) commitFormFields(reduce('formFields', formFieldsRef.current))
     if (touched.has('blankPages')) commitBlankPages(reduce('blankPages', blankPagesRef.current))
+    if (touched.has('duplicates')) commitDuplicates(reduce('duplicates', duplicatesRef.current))
     if (touched.has('formWidgetEdits')) {
       formWidgetEditsRef.current = reduce('formWidgetEdits', formWidgetEditsRef.current)
       setFormWidgetEdits(formWidgetEditsRef.current)
@@ -2802,6 +2898,7 @@ export default function App() {
     commitTextInserts(s.textInserts)
     commitFormFields(s.formFields)
     commitBlankPages(s.blankPages)
+    commitDuplicates(s.duplicates)
     setSelectedFormFieldIds((cur) =>
       cur.filter((id) => designWidgetId(id) || s.formFields.some((f) => f.id === id)),
     )
@@ -3451,9 +3548,10 @@ export default function App() {
   const resolveDocFont = async (origIdx: number, fontId: string): Promise<DocFontStyle | null> => {
     const cached = docFontsRef.current.get(fontId)
     if (cached) return cached
-    if (!doc || isBlankPage(origIdx)) return null
+    const pageNo = contentPageNo(origIdx)
+    if (!doc || pageNo === null) return null
     try {
-      const page = await doc.getPage(origIdx + 1)
+      const page = await doc.getPage(pageNo)
       const f = page.commonObjs.get(fontId) as { name?: string } | null
       if (!f?.name) return null
       const style = mapDocFont(f.name)
@@ -4684,7 +4782,9 @@ export default function App() {
       const taken = new Set(editOpContext().fieldNames ?? [])
       const found: FormFieldInput[] = []
       for (const origIdx of visList) {
-        const page = await doc.getPage(origIdx + 1)
+        const pageNo = contentPageNo(origIdx)
+        if (pageNo === null) continue
+        const page = await doc.getPage(pageNo)
         const { items, shapes } = await collectDetectInput(page)
         const g = pageGeom(origIdx)
         const unit = g.userUnit ?? 1
@@ -4899,6 +4999,12 @@ export default function App() {
 
   /** Localize known structured main-process errors; other messages pass through raw */
   const friendlySaveError = (error: string): string => {
+    // A redaction the engine could not confirm has its own notice: the remedy is to
+    // recheck the marked areas, not to revert edits on the page.
+    const redactVerify = /redact-verify-failed pages=([\d,]+)/.exec(error)
+    if (redactVerify) {
+      return t('redactVerifyFailed', { pages: redactVerify[1]!.split(',').join(', ') })
+    }
     const verify = /save-verify-failed pages=([\d,]+)/.exec(error)
     if (verify) return t('saveVerifyFailed', { pages: verify[1]!.split(',').join(', ') })
     return error
@@ -4983,6 +5089,7 @@ export default function App() {
       formValues: [...formEdits.values()],
       formFields: fields.map((f) => f.input),
       blankPages: blankPages.map((b) => b.input),
+      duplicatedPages: duplicates.map((d) => d.input),
       formWidgetEdits: [...formWidgetEdits.values()],
       rotations: [...rotations].map(([pageIndex, delta]) => ({ pageIndex, delta })),
       deletedPages: [...deleted],
@@ -5082,6 +5189,7 @@ export default function App() {
       formEdits,
       formFieldIds: new Set(fields.map((f) => f.id)),
       blankPageIds: new Set(blankPages.map((b) => b.id)),
+      duplicatePageIds: new Set(duplicates.map((d) => d.id)),
       formWidgetEdits,
       rotations,
       metadata,
@@ -5183,7 +5291,11 @@ export default function App() {
         try {
           preparedOperation = {
             ...operation,
-            pageBoxes: await detectPdfAutoCropBoxes(sourceDocument, operation),
+            pageBoxes: await detectPdfAutoCropBoxes(
+              sourceDocument,
+              operation,
+              operation.pageIndexes,
+            ),
           }
         } finally {
           await loadingTask.destroy()
@@ -5368,10 +5480,17 @@ export default function App() {
         })
         const sourceDocument = await loadingTask.promise
         try {
-          preparedOperation = {
-            ...operation,
-            pages: await renderRedactedPdfPages(sourceDocument, operation),
-          }
+          const pages = await renderRedactedPdfPages(sourceDocument, operation)
+          // Verify the copy the shell is about to write, not the source: baking the
+          // page bitmaps with the same engine call the main process runs and then
+          // re-reading its text layer catches a pipeline that skipped or failed a
+          // page. A failed check must never leave a "redacted" file behind, so it
+          // throws here before the operation reaches the shell.
+          await verifyRedactedCopy(
+            await redactSelectedPdfPagesBytes(new Uint8Array(data), pages),
+            operation,
+          )
+          preparedOperation = { ...operation, pages }
         } finally {
           await loadingTask.destroy()
         }
@@ -5766,7 +5885,16 @@ export default function App() {
         return
       }
       if ('canceled' in result) return
-      if (!(operation.kind === 'autoSplit' && operation.action === 'divider')) setToolDlg(null)
+      // A compressed file that came out no smaller is still a successful run, but
+      // the dialog stays open so the review step can say the file can't shrink further.
+      const compressNoShrink =
+        operation.kind === 'compress' &&
+        result.inputBytes !== undefined &&
+        result.outputBytes !== undefined &&
+        !compressionShrank(result.inputBytes, result.outputBytes)
+      setToolCompressNoShrink(compressNoShrink)
+      if (!compressNoShrink && !(operation.kind === 'autoSplit' && operation.action === 'divider'))
+        setToolDlg(null)
       showNotice(pdfToolSuccessText(lang, result.count))
     } catch (error) {
       showNotice(error instanceof Error ? error.message : String(error))
@@ -6009,6 +6137,7 @@ export default function App() {
       formEdits.size > 0 ||
       formFields.length > 0 ||
       blankPages.length > 0 ||
+      duplicates.length > 0 ||
       formWidgetEdits.size > 0 ||
       rotations.size > 0 ||
       deleted.size > 0 ||
@@ -6092,6 +6221,44 @@ export default function App() {
     if (pageCount <= 1 || readOnly) return
     applyEditOps([{ op: 'deletePage', pageIndex: origIdx }])
   }
+
+  /** "Duplicate page": stage a copy right after each source (Stirling's per-page
+      action). A copy is a virtual page like a blank one, so it shows up at once,
+      drags, undoes and lands in the file on save, carrying its source's content
+      and any pending turn. Sources are handled in visible order, and a copy of a
+      copy chains back to the original content. */
+  const duplicatePages = (origIdxs: number[]): string | null => {
+    if (redactions.length > 0) return t('redactStructureBlocked')
+    if (readOnly) return null
+    const sources = [...new Set(origIdxs)]
+      .filter((idx) => visList.includes(idx))
+      .sort((a, b) => visList.indexOf(a) - visList.indexOf(b))
+    if (sources.length === 0) return null
+    let next = sizes.length + blankPagesRef.current.length + duplicatesRef.current.length
+    const ops: Op[] = sources.map((source) => {
+      // Anchor after the last copy of this page already in the view, so repeated
+      // duplicates accumulate in creation order; otherwise right after the source.
+      const existing = duplicatesRef.current
+        .filter((d) => d.input.sourcePageIndex === source)
+        .map((d) => d.input.pageIndex)
+        .filter((idx) => visList.includes(idx))
+        .sort((a, b) => visList.indexOf(a) - visList.indexOf(b))
+      const anchor = existing[existing.length - 1]
+      return {
+        op: 'duplicatePage',
+        sourcePageIndex: source,
+        pageIndex: next++,
+        rotation: rotationsRef.current.get(source) ?? 0,
+        ...(anchor !== undefined ? { after: anchor } : {}),
+      }
+    })
+    const plan = applyEditOps(ops)
+    if (plan.failures.length > 0) return plan.failures[0]!.error
+    scrollAfterReorderRef.current = next - 1
+    return null
+  }
+
+  const duplicatePage = (origIdx: number) => duplicatePages([origIdx])
 
   // ── Drawing annotations ──
 
@@ -6500,7 +6667,9 @@ export default function App() {
     const cached = pageBoxShapesRef.current.get(origIdx)
     if (cached) return cached
     if (!doc) return []
-    const shapes = await collectDetectInput(await doc.getPage(origIdx + 1))
+    const pageNo = contentPageNo(origIdx)
+    if (pageNo === null) return []
+    const shapes = await collectDetectInput(await doc.getPage(pageNo))
       .then((r) => r.shapes)
       .catch(() => [])
     pageBoxShapesRef.current.set(origIdx, shapes)
@@ -7318,7 +7487,7 @@ export default function App() {
             pageNumbers.push(visList.indexOf(origIdx) + 1)
             continue
           }
-          const page = await doc.getPage(origIdx + 1)
+          const page = await doc.getPage(contentPageNo(origIdx) ?? origIdx + 1)
           const viewport = page.getViewport({
             scale: 150 / 72,
             rotation: (page.rotate + rotDelta(origIdx)) % 360,
@@ -7718,7 +7887,7 @@ export default function App() {
       neighbor !== undefined && (allSizes[neighbor] ?? blankSizeNow(neighbor))
         ? geomDispSize(pageGeomRef.current(neighbor))
         : { width: 595.28, height: 841.89 }
-    const pageIndex = sizes.length + blankPagesRef.current.length
+    const pageIndex = sizes.length + blankPagesRef.current.length + duplicatesRef.current.length
     const plan = applyEditOpsRef.current([
       { op: 'insertBlankPage', after, pageIndex, width: size.width, height: size.height },
     ])
@@ -7808,9 +7977,10 @@ export default function App() {
 
   /** Render the page as displayed (rotation included) for the crop dialog */
   const openPageCrop = async (origIdx: number) => {
-    if (!doc || isBlankPage(origIdx)) return
+    const pageNo = contentPageNo(origIdx)
+    if (!doc || pageNo === null) return
     try {
-      const page = await doc.getPage(origIdx + 1)
+      const page = await doc.getPage(pageNo)
       const rotation = (((page.rotate + rotDelta(origIdx)) % 360) + 360) % 360
       const base = page.getViewport({ scale: 1, rotation })
       const k = Math.min(1600 / base.width, 1600 / base.height, 4)
@@ -7873,7 +8043,7 @@ export default function App() {
       : neighbor !== undefined && (allSizes[neighbor] ?? blankSizeNow(neighbor))
         ? geomDispSize(pageGeomRef.current(neighbor))
         : { width: 595.28, height: 841.89 }
-    const first = sizes.length + blankPagesRef.current.length
+    const first = sizes.length + blankPagesRef.current.length + duplicatesRef.current.length
     // One batch so the whole dialog confirm is a single undo step
     const ops: Op[] = []
     let after = afterOrigIdx
@@ -8007,6 +8177,7 @@ export default function App() {
     add(formEdits.size, 'form field changes')
     add(formFields.length, 'new form fields (Form Design)')
     add(blankPages.length, 'blank pages added')
+    add(duplicates.length, 'page copies added')
     add(formWidgetEdits.size, 'existing form field changes (Form Design)')
     add(rotations.size, 'page rotations')
     add(deleted.size, 'page deletions')
@@ -8704,6 +8875,18 @@ export default function App() {
         if (k === 's') {
           e.preventDefault()
           void save()
+        } else if (k === 'd' && !inEditable && !readOnly) {
+          // Duplicate the page in view (Stirling's Ctrl/Cmd+D); a focused thumbnail
+          // names its own page. With no page to act on the shortcut falls through.
+          const focused = thumbsRef.current?.contains(document.activeElement)
+            ? Number((document.activeElement as HTMLElement).dataset.idx)
+            : NaN
+          const target = Number.isInteger(focused) ? visList[focused] : visList[currentPage - 1]
+          if (target !== undefined) {
+            e.preventDefault()
+            const error = duplicatePages([target])
+            if (error) showNotice(error)
+          }
         } else if (k === 'z') {
           e.preventDefault()
           if (e.shiftKey) redo()
@@ -8906,14 +9089,52 @@ export default function App() {
     return (
       <div className="app">
         <div className="pdf-placeholder">
-          {status === 'loading'
-            ? t('loading')
-            : status === 'error'
-              ? openError
-                ? `${t('loadError')}: ${openError}`
-                : t('loadError')
-              : t('noFile')}
+          <div className="pdf-placeholder-inner">
+            <div>
+              {status === 'loading'
+                ? t('loading')
+                : status === 'error'
+                  ? openDamaged
+                    ? t('damagedPdf')
+                    : openError
+                      ? `${t('loadError')}: ${openError}`
+                      : t('loadError')
+                  : t('noFile')}
+            </div>
+            {status === 'error' && openDamaged && openError ? (
+              <div className="pdf-placeholder-detail">{openError}</div>
+            ) : null}
+            {status === 'error' && openDamaged && filePath ? (
+              <button
+                className="pdf-modal-btn primary"
+                type="button"
+                onClick={() => setToolDlg('repair')}
+              >
+                {t('repairOffer')}
+              </button>
+            ) : null}
+          </div>
         </div>
+        {/* The repair tool is the same dialog the tools ribbon opens; it reads the
+            file by path, so it works even though no document is on screen yet */}
+        {toolDlg && filePath ? (
+          <PdfToolsDialog
+            initialKind={toolDlg}
+            filePath={filePath}
+            lang={lang}
+            currentPage={currentPage}
+            pageCount={pageCount}
+            t={t}
+            busy={toolBusy}
+            encrypted={documentEncrypted}
+            openingPassword={passwordRef.current ?? ''}
+            ocrProgress={ocrProgress}
+            videoProgress={videoProgress}
+            onCancel={() => setToolDlg(null)}
+            onApply={(operation) => void runPdfTool(operation)}
+            onBulkReplaceText={(request) => void runBulkTextReplacement(request)}
+          />
+        ) : null}
       </div>
     )
   }
@@ -10352,7 +10573,10 @@ export default function App() {
                           }
                           data-tip={pdfToolLabel(kind, lang)}
                           aria-label={pdfToolLabel(kind, lang)}
-                          onClick={() => setToolDlg(kind)}
+                          onClick={() => {
+                            setToolCompressNoShrink(false)
+                            setToolDlg(kind)
+                          }}
                         >
                           <span className="rb-big-icon">
                             <ToolIcon />
@@ -10518,6 +10742,13 @@ export default function App() {
                   t={t}
                   entries={commentEntries ?? []}
                   loading={commentsLoading || commentEntries === null}
+                  onExport={() => {
+                    downloadTextFile(
+                      commentsCsvFileName(fileName),
+                      commentsToCsv(commentEntries ?? []),
+                      'text/csv;charset=utf-8',
+                    )
+                  }}
                   onOpen={(e) => {
                     scrollToPage(visList.indexOf(e.origIdx) + 1)
                     setNoteDraft(null)
@@ -10659,7 +10890,7 @@ export default function App() {
                         {!isBlankPage(origIdx) && (
                           <PdfThumb
                             doc={doc}
-                            pageNo={origIdx + 1}
+                            pageNo={contentPageNo(origIdx) ?? origIdx + 1}
                             rotationDelta={rotDelta(origIdx)}
                             visible={visibleThumbs.has(v)}
                             rasterW={thumbRasterW}
@@ -10863,15 +11094,15 @@ export default function App() {
                           }}
                         >
                           {!isBlankPage(origIdx) &&
-                            (failedPages.has(origIdx + 1) ? (
+                            (failedPages.has(contentPageNo(origIdx) ?? origIdx + 1) ? (
                               <div className="pdf-page-broken">
                                 <span>{t('loadError')}</span>
-                                <span>#{origIdx + 1}</span>
+                                <span>#{contentPageNo(origIdx) ?? origIdx + 1}</span>
                               </div>
                             ) : (
                               <PdfPage
                                 doc={doc}
-                                pageNo={origIdx + 1}
+                                pageNo={contentPageNo(origIdx) ?? origIdx + 1}
                                 scale={scale}
                                 rotationDelta={rotDelta(origIdx)}
                                 visible={rowVisible}
@@ -11951,7 +12182,7 @@ export default function App() {
                               {!isBlankPage(origIdx) && (
                                 <LinkLayer
                                   doc={doc}
-                                  pageNo={origIdx + 1}
+                                  pageNo={contentPageNo(origIdx) ?? origIdx + 1}
                                   geom={geom}
                                   scale={scale}
                                   onGoToDest={(dest) => void goToDest(dest)}
@@ -12408,6 +12639,15 @@ export default function App() {
                       }}
                     >
                       {t('rotateRight')}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setThumbMenu(null)
+                        const error = duplicatePage(menuOrig)
+                        if (error) showNotice(error)
+                      }}
+                    >
+                      {t('duplicatePage')}
                     </button>
                     <button
                       disabled={pageCount <= 1}
@@ -12954,7 +13194,11 @@ export default function App() {
                 openingPassword={passwordRef.current ?? ''}
                 ocrProgress={ocrProgress}
                 videoProgress={videoProgress}
-                onCancel={() => setToolDlg(null)}
+                compressNoShrink={toolCompressNoShrink}
+                onCancel={() => {
+                  setToolCompressNoShrink(false)
+                  setToolDlg(null)
+                }}
                 onApply={(operation) => void runPdfTool(operation)}
                 onBulkReplaceText={(request) => void runBulkTextReplacement(request)}
               />

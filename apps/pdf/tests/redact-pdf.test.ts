@@ -30,6 +30,26 @@ describe('PDF redaction rendering helpers', () => {
     ).toThrow()
   })
 
+  it('accepts the matchCase option for plain text and regex patterns', () => {
+    expect(() => validateRedactionOptions({ ...validOptions, matchCase: true })).not.toThrow()
+    expect(() =>
+      validateRedactionOptions({
+        ...validOptions,
+        matchCase: true,
+        useRegex: true,
+        patterns: ['[A-Z]{2}-\\d+'],
+      }),
+    ).not.toThrow()
+    expect(() =>
+      validateRedactionOptions({
+        ...validOptions,
+        matchCase: true,
+        useRegex: true,
+        patterns: ['['],
+      }),
+    ).toThrow()
+  })
+
   it('groups every matched rectangle by source page', () => {
     const grouped = matchesByPage([
       { pageIndex: 1, rects: [[10, 20, 30, 40]] },

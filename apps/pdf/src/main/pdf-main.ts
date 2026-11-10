@@ -2129,7 +2129,8 @@ function registerPdfIpc(): void {
         return { ok: false, error: 'pdf: path not granted to this view' }
       }
       try {
-        const outputs = await runPdfToolBytes(new Uint8Array(await readFile(path)), operation)
+        const sourceBytes = new Uint8Array(await readFile(path))
+        const outputs = await runPdfToolBytes(sourceBytes, operation)
         if (outputs.length === 0) return { ok: false, error: 'PDF tool produced no output' }
         const win =
           BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined
@@ -2154,7 +2155,14 @@ function registerPdfIpc(): void {
           })
           if (picked.canceled || !picked.filePath) return { ok: true, canceled: true }
           await writeFile(picked.filePath, output.bytes)
-          return { ok: true, savedPath: picked.filePath, count: 1 }
+          // Sizes let the renderer tell the user when a run produced no saving
+          return {
+            ok: true,
+            savedPath: picked.filePath,
+            count: 1,
+            inputBytes: sourceBytes.byteLength,
+            outputBytes: output.bytes.byteLength,
+          }
         }
 
         const picked = await showOpenDialogWithMemory(dialog, win, {

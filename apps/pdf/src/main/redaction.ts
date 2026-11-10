@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { chainPdfium, loadPdfium, saveDoc, withDocument } from './text-edit'
+import { chainPdfium, collectTextObjects, loadPdfium, saveDoc, withDocument } from './text-edit'
 import type { RedactionInput } from '../shared/ipc'
 
 /** PDF user-space rectangle. Callers retain original page indices until the redaction copy is made. */
@@ -425,5 +425,97 @@ export function redactPdf(bytes: Uint8Array, regions: RedactionRegion[]): Promis
       }
       return saveDoc(m, doc)
     })
+  })
+}
+
+export interface RedactionVerificationFailure {
+  pageIndex: number
+  reason: string
+}
+
+/** A glyph box that only grazes the redaction edge is boundary noise, not a miss. */
+const REDACTION_VERIFY_INSET_PT = 0.25
+
+/**
+ * Read-back check of a permanent redaction: no text run may still overlap a
+ * redacted rectangle in the written bytes. The native apply removes glyphs
+ * intersecting each rectangle, so a survivor means the page was skipped, the
+ * content stream was not regenerated, or the area missed the text — all cases
+ * where the output must be withheld instead of presented as redacted.
+ *
+ * The check never reports the text it found: a redacted string must not come
+ * back to the caller through an error message.
+ */
+export function verifyRedactionRegions(
+  bytes: Uint8Array,
+  regions: RedactionRegion[],
+  /** the password when the saved output is encrypted again */
+  password?: string,
+): Promise<RedactionVerificationFailure[]> {
+  let checked: RedactionRegion[]
+  try {
+    checked = validateRedactionRegions(regions)
+  } catch (err) {
+    return Promise.reject(err)
+  }
+  return chainPdfium(async () => {
+    const m = await loadPdfium()
+    return withDocument(
+      m,
+      bytes,
+      async (doc) => {
+        const failures: RedactionVerificationFailure[] = []
+        const pageCount = m._FPDF_GetPageCount(doc)
+        const byPage = new Map<number, RedactionRegion[]>()
+        for (const region of checked) {
+          if (region.pageIndex >= pageCount) {
+            failures.push({
+              pageIndex: region.pageIndex,
+              reason: 'redacted page is missing from the saved output',
+            })
+            continue
+          }
+          const current = byPage.get(region.pageIndex)
+          if (current) current.push(region)
+          else byPage.set(region.pageIndex, [region])
+        }
+        for (const [pageIndex, pageRegions] of byPage) {
+          const page = m._FPDF_LoadPage(doc, pageIndex)
+          if (!page) {
+            failures.push({ pageIndex, reason: 'redacted page is unreadable in the saved output' })
+            continue
+          }
+          const textPage = m._FPDFText_LoadPage(page)
+          try {
+            const runs = collectTextObjects(m, page, textPage).filter(
+              (run) =>
+                run.text.trim().length > 0 &&
+                run.bounds[2] > run.bounds[0] &&
+                run.bounds[3] > run.bounds[1],
+            )
+            for (const region of pageRegions) {
+              const [x1, y1, x2, y2] = region.rect
+              const left = Math.min(x1, x2) + REDACTION_VERIFY_INSET_PT
+              const right = Math.max(x1, x2) - REDACTION_VERIFY_INSET_PT
+              const bottom = Math.min(y1, y2) + REDACTION_VERIFY_INSET_PT
+              const top = Math.max(y1, y2) - REDACTION_VERIFY_INSET_PT
+              if (!(right > left && top > bottom)) continue
+              if (runs.some((run) => intersects([left, bottom, right, top], run.bounds))) {
+                failures.push({
+                  pageIndex,
+                  reason: 'text still overlaps the redacted area in the saved output',
+                })
+                break
+              }
+            }
+          } finally {
+            m._FPDFText_ClosePage(textPage)
+            m._FPDF_ClosePage(page)
+          }
+        }
+        return failures
+      },
+      password,
+    )
   })
 }

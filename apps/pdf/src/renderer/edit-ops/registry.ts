@@ -80,6 +80,7 @@ export const BUCKETS: Bucket[] = [
   'formFields',
   'formWidgetEdits',
   'blankPages',
+  'duplicates',
   'rotations',
   'deleted',
   'order',

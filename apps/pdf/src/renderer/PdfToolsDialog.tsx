@@ -183,6 +183,7 @@ const EN = {
   redact: 'Secure redaction',
   comments: 'Add comments',
   compress: 'Compress PDF',
+  compressNoShrink: 'Compression ran successfully, but this file cannot be compressed any further.',
   flatten: 'Flatten PDF',
   forms: 'Forms',
   repair: 'Repair PDF',
@@ -312,6 +313,7 @@ const EN = {
   cropManual: 'Manual margins',
   whiteThreshold: 'White threshold',
   cropPadding: 'Keep padding',
+  cropPages: 'Pages to crop',
   autoCropHint: 'Detects white page margins locally and keeps the original vector content.',
   top: 'Top',
   right: 'Right',
@@ -1109,6 +1111,7 @@ const ZH: typeof EN = {
   redact: '安全涂黑',
   comments: '添加便签评论',
   compress: '压缩 PDF',
+  compressNoShrink: '压缩已完成，但该文件已无法进一步压缩。',
   flatten: 'PDF 扁平化',
   forms: '表单处理',
   repair: '修复 PDF',
@@ -1232,6 +1235,7 @@ const ZH: typeof EN = {
   cropManual: '手动边距',
   whiteThreshold: '白色阈值',
   cropPadding: '保留边距',
+  cropPages: '裁边页面',
   autoCropHint: '在本地识别页面白边，并保留原始矢量内容。',
   top: '上边距',
   right: '右边距',
@@ -1978,6 +1982,7 @@ const ZH_TW: typeof EN = {
   cropManual: '手動邊距',
   whiteThreshold: '白色閾值',
   cropPadding: '保留邊距',
+  cropPages: '裁邊頁面',
   autoCropHint: '在本機識別頁面白邊，並保留原始向量內容。',
   scale: '縮放',
   nup: '多頁合一',
@@ -2093,6 +2098,7 @@ const ZH_TW: typeof EN = {
   redact: '安全塗黑',
   comments: '新增便箋評論',
   compress: '壓縮 PDF',
+  compressNoShrink: '壓縮已完成，但該檔案已無法進一步壓縮。',
   flatten: 'PDF 扁平化',
   forms: '表單處理',
   repair: '修復 PDF',
@@ -3337,6 +3343,7 @@ export function PdfToolsDialog({
   openingPassword,
   ocrProgress,
   videoProgress,
+  compressNoShrink = false,
   onCancel,
   onApply,
   onBulkReplaceText,
@@ -3352,6 +3359,8 @@ export function PdfToolsDialog({
   openingPassword: string
   ocrProgress: PdfOcrProgress | null
   videoProgress: PdfVideoProgress | null
+  /** The last compress run wrote a file no smaller than its source: show the review notice */
+  compressNoShrink?: boolean
   onCancel: () => void
   onApply: (operation: PdfToolOperation) => void
   onBulkReplaceText: (request: PdfBulkTextReplacementRequest) => void
@@ -3471,6 +3480,7 @@ export function PdfToolsDialog({
   const [cropMode, setCropMode] = useState<'auto' | 'manual'>('auto')
   const [cropWhiteThreshold, setCropWhiteThreshold] = useState(250)
   const [cropPadding, setCropPadding] = useState(6)
+  const [cropPages, setCropPages] = useState('')
   const [margins, setMargins] = useState({ top: 0, right: 0, bottom: 0, left: 0 })
   const [pageSize, setPageSize] = useState<PdfPageSize>('A4')
   const [scaleFactor, setScaleFactor] = useState(1)
@@ -3560,6 +3570,7 @@ export function PdfToolsDialog({
   const [redactionPatterns, setRedactionPatterns] = useState('')
   const [redactionUseRegex, setRedactionUseRegex] = useState(false)
   const [redactionWholeWord, setRedactionWholeWord] = useState(false)
+  const [redactionMatchCase, setRedactionMatchCase] = useState(false)
   const [redactionColor, setRedactionColor] = useState('#000000')
   const [redactionPadding, setRedactionPadding] = useState(2)
   const [redactionRenderDpi, setRedactionRenderDpi] = useState(144)
@@ -4452,6 +4463,12 @@ export function PdfToolsDialog({
       return
     }
     if (kind === 'crop') {
+      // Blank keeps the historical behavior of cropping every page.
+      const cropPageIndexes = cropPages.trim() ? parsePageIndexes(cropPages, pageCount) : undefined
+      if (cropPages.trim() && (!cropPageIndexes || cropPageIndexes.length === 0)) {
+        return setError(text.invalidPages)
+      }
+      const selection = cropPageIndexes ? { pageIndexes: cropPageIndexes } : {}
       if (cropMode === 'auto') {
         if (
           !Number.isInteger(cropWhiteThreshold) ||
@@ -4468,13 +4485,14 @@ export function PdfToolsDialog({
           mode: cropMode,
           whiteThreshold: cropWhiteThreshold,
           padding: cropPadding,
+          ...selection,
         })
         return
       }
       if (Object.values(margins).some((value) => !Number.isFinite(value) || value < 0)) {
         return setError(text.invalidMargins)
       }
-      onApply({ kind, mode: cropMode, margins })
+      onApply({ kind, mode: cropMode, margins, ...selection })
       return
     }
     if (kind === 'scale') {
@@ -4879,7 +4897,8 @@ export function PdfToolsDialog({
       }
       if (redactionMode === 'text' && redactionUseRegex) {
         try {
-          for (const pattern of patterns) new RegExp(pattern, 'giu')
+          const flags = redactionMatchCase ? 'gu' : 'giu'
+          for (const pattern of patterns) new RegExp(pattern, flags)
         } catch {
           return setError(text.invalidRedactionPatterns)
         }
@@ -4925,6 +4944,7 @@ export function PdfToolsDialog({
         patterns,
         useRegex: redactionUseRegex,
         wholeWord: redactionWholeWord,
+        matchCase: redactionMatchCase,
         color: redactionColor,
         padding: redactionPadding,
         renderDpi: redactionRenderDpi,
@@ -7360,6 +7380,19 @@ export function PdfToolsDialog({
                 ))}
               </span>
             </label>
+            <label className="pdf-field">
+              <span>{text.cropPages}</span>
+              <input
+                className={`pdf-modal-input${error ? ' invalid' : ''}`}
+                value={cropPages}
+                placeholder={text.pagesPlaceholder}
+                disabled={busy}
+                onChange={(event) => {
+                  setCropPages(event.target.value)
+                  setError('')
+                }}
+              />
+            </label>
             {cropMode === 'auto' ? (
               <>
                 <div className="pdf-tools-number-grid">
@@ -8414,6 +8447,18 @@ export function PdfToolsDialog({
                       onChange={(event) => setRedactionWholeWord(event.target.checked)}
                     />
                   </label>
+                  <label className="pdf-field">
+                    <span>{text.caseSensitive}</span>
+                    <input
+                      type="checkbox"
+                      checked={redactionMatchCase}
+                      disabled={busy}
+                      onChange={(event) => {
+                        setRedactionMatchCase(event.target.checked)
+                        setError('')
+                      }}
+                    />
+                  </label>
                 </div>
               </>
             ) : (
@@ -8747,6 +8792,11 @@ export function PdfToolsDialog({
 
         {kind === 'compress' && (
           <div className="pdf-tools-stack">
+            {compressNoShrink && (
+              <div className="pdf-preflight-status warning" role="status">
+                {text.compressNoShrink}
+              </div>
+            )}
             <label className="pdf-field">
               <span>{text.renderDpi}</span>
               <input

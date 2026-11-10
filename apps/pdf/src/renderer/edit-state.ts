@@ -7,6 +7,7 @@ import type { LocalTextEdit, LocalTextInsert } from './text-edit-preview'
 import type { PdfClassificationMetadata } from '@genoffice/pdf-tools'
 import type {
   BlankPageInput,
+  DuplicatePageInput,
   FormFieldInput,
   FormWidgetEditInput,
   FormValueInput,
@@ -72,6 +73,12 @@ export interface LocalBlankPage {
   input: BlankPageInput
 }
 
+/** A page duplicated in the session, pending until saved; `input.pageIndex` is its virtual original index */
+export interface LocalDuplicatePage {
+  id: string
+  input: DuplicatePageInput
+}
+
 export interface EditSnapshot {
   markups: LocalMarkup[]
   annotDeletes: LocalAnnotDelete[]
@@ -86,6 +93,8 @@ export interface EditSnapshot {
   /** widget id → pending design-time edit of an existing widget */
   formWidgetEdits: Map<string, FormWidgetEditInput>
   blankPages: LocalBlankPage[]
+  /** Page copies appended this session, pending until saved */
+  duplicates: LocalDuplicatePage[]
   rotations: Map<number, number>
   deleted: Set<number>
   order: number[] | null
@@ -114,6 +123,7 @@ export interface SavedSnapshot {
   formFieldIds: Set<string>
   formWidgetEdits: Map<string, FormWidgetEditInput>
   blankPageIds: Set<string>
+  duplicatePageIds: Set<string>
   rotations: Map<number, number>
   metadata: MetadataInput | null
   /** The edited bookmark tree this save wrote (same object the pending edit holds), or null */

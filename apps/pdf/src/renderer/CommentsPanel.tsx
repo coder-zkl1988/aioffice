@@ -91,23 +91,36 @@ export function CommentsPanel({
   entries,
   loading,
   onOpen,
+  onExport,
 }: {
   t: TFunc
   entries: CommentEntry[]
   loading: boolean
   onOpen: (e: CommentEntry) => void
+  /** Write every thread (not just the filtered ones) out as a CSV file */
+  onExport: () => void
 }): ReactElement {
   const [query, setQuery] = useState('')
   const shown = useMemo(() => filterCommentEntries(entries, query), [entries, query])
   return (
     <div className="pdf-comments" role="list" aria-label={t('commentsPanel')}>
-      <input
-        className="pdf-comments-filter"
-        type="search"
-        placeholder={t('commentsFilter')}
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-      />
+      <div className="pdf-comments-toolbar">
+        <input
+          className="pdf-comments-filter"
+          type="search"
+          placeholder={t('commentsFilter')}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <button
+          type="button"
+          className="pdf-modal-btn pdf-comments-export"
+          disabled={entries.length === 0}
+          onClick={onExport}
+        >
+          {t('commentsExport')}
+        </button>
+      </div>
       {loading ? (
         <div className="pdf-outline-empty" role="status">
           {t('commentsLoading')}

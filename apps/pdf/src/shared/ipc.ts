@@ -761,6 +761,16 @@ export interface BlankPageInput {
   height: number
 }
 
+/** A page duplicated in the session. `pageIndex` is its virtual original index,
+    appended after the document's pages and after any pending blank pages;
+    `sourcePageIndex` addresses the page it copies (an original page or another
+    pending virtual page, which always precedes it). The save appends the copy
+    at `pageIndex`, then the page order places it in the document. */
+export interface DuplicatePageInput {
+  pageIndex: number
+  sourcePageIndex: number
+}
+
 /** What a reader may do with a protected document (§7.6.3.2 Table 24, grouped) */
 export interface PdfPermissions {
   printing: boolean
@@ -845,6 +855,8 @@ export interface SavePdfRequest {
   formFields?: FormFieldInput[]
   /** Blank pages appended (in pageIndex order) before every page-addressed stage runs */
   blankPages?: BlankPageInput[]
+  /** Duplicated pages appended alongside the blank pages, in the same pageIndex order */
+  duplicatedPages?: DuplicatePageInput[]
   /** Page rotation deltas (original page index → multiple of 90 clockwise) */
   rotations?: { pageIndex: number; delta: number }[]
   /** Pages to delete (original page indices) */
@@ -969,7 +981,15 @@ export interface PdfTimestampTokenRequest {
 }
 
 export type RunPdfToolResult =
-  | { ok: true; savedPath: string; count: number }
+  | {
+      ok: true
+      savedPath: string
+      count: number
+      /** Size of the source file handed to the tool (single-output runs only) */
+      inputBytes?: number
+      /** Size of the single output written to disk (single-output runs only) */
+      outputBytes?: number
+    }
   | { ok: true; canceled: true }
   | { ok: false; error: string }
 

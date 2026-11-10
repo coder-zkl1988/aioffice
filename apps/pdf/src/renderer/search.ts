@@ -207,10 +207,11 @@ function matchRanges(
   pattern: string,
   useRegex: boolean,
   wholeWord: boolean,
+  caseSensitive = false,
 ): Array<readonly [number, number]> {
   const source = useRegex ? pattern : escapeRegExp(pattern)
   const expression = wholeWord ? `\\b(?:${source})\\b` : source
-  const regex = new RegExp(expression, useRegex ? 'giu' : 'giu')
+  const regex = new RegExp(expression, caseSensitive ? 'gu' : 'giu')
   const ranges: Array<readonly [number, number]> = []
   let match: RegExpExecArray | null
   while ((match = regex.exec(text)) && ranges.length < MAX_MATCHES) {
@@ -247,6 +248,7 @@ export function searchPatternsInIndex(
   patterns: string[],
   useRegex: boolean,
   wholeWord: boolean,
+  caseSensitive = false,
 ): SearchMatch[] {
   const cleanedPatterns = patterns.map((pattern) => pattern.trim()).filter(Boolean)
   if (cleanedPatterns.length === 0) return []
@@ -254,7 +256,13 @@ export function searchPatternsInIndex(
   for (let pageIndex = 0; pageIndex < index.length && matches.length < MAX_MATCHES; pageIndex++) {
     const entry = index[pageIndex]!
     for (const pattern of cleanedPatterns) {
-      for (const [start, end] of matchRanges(entry.text, pattern, useRegex, wholeWord)) {
+      for (const [start, end] of matchRanges(
+        entry.text,
+        pattern,
+        useRegex,
+        wholeWord,
+        caseSensitive,
+      )) {
         const rects = rectsForRange(entry, start, end)
         if (rects.length > 0) matches.push({ pageIndex, rects })
         if (matches.length >= MAX_MATCHES) break

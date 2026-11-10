@@ -161,6 +161,11 @@ export const OP_DOCS: Record<string, OpDoc> = {
     group: 'page',
     aiCallable: false,
   },
+  duplicatePage: {
+    sig: "{sourcePageIndex,pageIndex,rotation?,after?} — copy a page directly after its source (or after an earlier copy via `after`); pageIndex must be the next page index; rotation keeps the source's pending turn",
+    group: 'page',
+    aiCallable: false,
+  },
   rotatePages: {
     sig: '{pages:[pageIndex,…],dir:90|-90|180} — clockwise degrees added to the page rotation',
     aiSig:

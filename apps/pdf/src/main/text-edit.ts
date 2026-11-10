@@ -613,7 +613,7 @@ export function mergeEngineCodepoints(engineRaw: string, oldText: string, newTex
   return out
 }
 
-interface PageTextObj {
+export interface PageTextObj {
   obj: number
   /** Page object index; for text inside a Form XObject, its top-level ancestor's */
   index: number
@@ -626,7 +626,9 @@ interface PageTextObj {
   ordinals: readonly number[]
 }
 
-function collectTextObjects(m: Pdfium, page: number, textPage: number): PageTextObj[] {
+/** Every text object on the page (including text inside Form XObjects), with
+    page-space bounds — shared by edit verification and redaction verification. */
+export function collectTextObjects(m: Pdfium, page: number, textPage: number): PageTextObj[] {
   const out: PageTextObj[] = []
   const bl = m._malloc(4)
   const bb = m._malloc(4)
