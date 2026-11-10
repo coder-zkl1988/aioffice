@@ -1095,7 +1095,10 @@ describe('PDF to Word', () => {
   })
 
   it('creates page-fidelity Word documents backed by PNG media', async () => {
-    const imageBytes = new Uint8Array([137, 80, 78, 71])
+    // Two real page renders differ; identical bytes would share one media part
+    // (the docx engine dedupes repeated images)
+    const imageBytes = new Uint8Array([137, 80, 78, 71, 1])
+    const secondImageBytes = new Uint8Array([137, 80, 78, 71, 2])
     const output = await pdfToDocxBytes({
       pageCount: 2,
       pageIndexes: [0, 1],
@@ -1104,14 +1107,17 @@ describe('PDF to Word', () => {
       includeAnnotations: false,
       pages: [
         { ...firstPage, imageBytes, imageWidth: 1224, imageHeight: 1584 },
-        { ...secondPage, imageBytes, imageWidth: 1224, imageHeight: 1584 },
+        { ...secondPage, imageBytes: secondImageBytes, imageWidth: 1224, imageHeight: 1584 },
       ],
     })
     const archive = await JSZip.loadAsync(output.bytes)
     const media = Object.keys(archive.files).filter((name) => /^word\/media\/.*\.png$/.test(name))
     expect(media).toHaveLength(2)
-    expect(Array.from(await archive.file(media[0]!)!.async('uint8array'))).toEqual(
-      Array.from(imageBytes),
+    const mediaBytes = await Promise.all(
+      media.map((name) => archive.file(name)!.async('uint8array')),
+    )
+    expect(mediaBytes.map((bytes) => Array.from(bytes))).toEqual(
+      expect.arrayContaining([Array.from(imageBytes), Array.from(secondImageBytes)]),
     )
     expect(await archive.file('word/document.xml')!.async('string')).toContain('<w:pageBreakBefore')
   })

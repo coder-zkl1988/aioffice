@@ -5,5 +5,12 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["vite/client"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": [
+    "src",
+    "vite.config.ts",
+    // the web entries bundle these apps' renderers, whose ambient declarations
+    // live beside their own sources
+    "../../apps/markdown/src/renderer/types/wavedrom.d.ts",
+    "../../apps/sheets/src/renderer/env.d.ts"
+  ]
 }

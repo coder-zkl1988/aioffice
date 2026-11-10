@@ -7,8 +7,12 @@ import {
   listSavedSignatures,
   saveSignature,
   SignatureLibraryError,
-  type SavedSignature,
 } from './signature-library'
+import type { SavedSignature as StoredSignature } from './signature-library'
+import type { SavedSignature, SignatureData, SignatureStrokes } from '../shared/ipc'
+import { useModalDialog } from './modal-dialog'
+
+export type { SignatureData, SignatureStrokes }
 
 const PAD_W = 420
 const PAD_H = 150
@@ -30,24 +34,6 @@ const SIGN_FONTS: { id: string; family: string; italic?: boolean }[] = [
 
 /** Font size used when rasterizing a typed signature; large so the stamp stays crisp when scaled */
 const TYPE_FONT_PX = 200
-
-/** Signature strokes: pad pixel coords, scaled proportionally and y-flipped when placed on the page */
-export interface SignatureStrokes {
-  paths: number[][]
-  width: number
-  height: number
-}
-
-/** Confirmed signature awaiting placement: hand strokes (Ink) or a bitmap (Stamp) */
-export type SignatureData =
-  | ({ kind: 'strokes' } & SignatureStrokes)
-  | {
-      kind: 'image'
-      /** base64 PNG, without the data: prefix */
-      image: string
-      width: number
-      height: number
-    }
 
 /** Decode + downscale an image file onto a canvas (null if it can't be decoded) */
 export async function fileToCanvas(
@@ -129,6 +115,8 @@ function textToImage(
     : null
 }
 
+/** Stored-signature thumbnail: a bitmap is shown as-is, strokes are scaled into the
+    card via viewBox (pad coordinates stay unchanged) */
 function SignaturePreview({
   signature,
   color,
@@ -146,14 +134,14 @@ function SignaturePreview({
       aria-hidden="true"
     >
       {signature.paths.map((path, index) => {
-        const points: string[] = []
-        for (let offset = 0; offset < path.length; offset += 2) {
-          points.push(`${path[offset]},${path[offset + 1]}`)
+        let d = `M ${path[0]} ${path[1]}`
+        for (let offset = 2; offset < path.length; offset += 2) {
+          d += ` L ${path[offset]} ${path[offset + 1]}`
         }
         return (
-          <polyline
+          <path
             key={index}
-            points={points.join(' ')}
+            d={d}
             fill="none"
             stroke={cssRgb(color)}
             strokeWidth="2.4"
@@ -184,22 +172,38 @@ export function SignatureDialog({
   const [imgCanvas, setImgCanvas] = useState<HTMLCanvasElement | null>(null)
   const [bw, setBw] = useState(false)
   const [drawnPathCount, setDrawnPathCount] = useState(0)
-  const [savedSignatures, setSavedSignatures] = useState<SavedSignature[]>([])
+  /** Named signatures stored in the on-device library (IndexedDB, capped and labeled) */
+  const [savedSignatures, setSavedSignatures] = useState<StoredSignature[]>([])
   const [libraryLoaded, setLibraryLoaded] = useState(false)
   const [libraryError, setLibraryError] = useState<'limit' | 'storage' | null>(null)
   const [signatureLabel, setSignatureLabel] = useState('')
   const [savingSignature, setSavingSignature] = useState(false)
+  /** Signatures persisted in userData; picking one skips creation and goes straight to placement */
+  const [saved, setSaved] = useState<SavedSignature[]>([])
+  const [saveForReuse, setSaveForReuse] = useState(true)
   const fileRef = useRef<HTMLInputElement>(null)
+  const dialogRef = useModalDialog(onCancel)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const pathsRef = useRef<number[][]>([])
   const curRef = useRef<number[] | null>(null)
 
-  /** Processed image + preview data URL, recomputed when the source or the B&W toggle changes */
-  const processedImg = useMemo(() => {
-    if (!imgCanvas) return null
-    const canvas = bw ? toBlackAndWhite(imgCanvas) : imgCanvas
-    return { canvas, url: canvas.toDataURL('image/png') }
-  }, [imgCanvas, bw])
+  useEffect(() => {
+    let alive = true
+    window.pdfApi
+      .listSavedSignatures()
+      .then((list) => {
+        if (alive) setSaved(list)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const removeSaved = (id: string) => {
+    setSaved((prev) => prev.filter((s) => s.id !== id))
+    window.pdfApi.removeSavedSignature(id).catch(() => {})
+  }
 
   useEffect(() => {
     let active = true
@@ -217,6 +221,13 @@ export function SignatureDialog({
       active = false
     }
   }, [])
+
+  /** Processed image + preview data URL, recomputed when the source or the B&W toggle changes */
+  const processedImg = useMemo(() => {
+    if (!imgCanvas) return null
+    const canvas = bw ? toBlackAndWhite(imgCanvas) : imgCanvas
+    return { canvas, url: canvas.toDataURL('image/png') }
+  }, [imgCanvas, bw])
 
   const pickImage = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -277,6 +288,7 @@ export function SignatureDialog({
     redraw()
   }
 
+  /** Build the signature currently on screen without confirming it (also used to name-save) */
   const currentSignature = (): SignatureData | null => {
     if (mode === 'draw') {
       const paths = pathsRef.current.filter((p) => p.length >= 4)
@@ -298,9 +310,15 @@ export function SignatureDialog({
     return text ? textToImage(text, SIGN_FONTS[fontIdx] ?? SIGN_FONTS[0]!, color) : null
   }
 
+  /** New signature confirmed: persist it for reuse (unless opted out), then hand off to placement */
+  const finish = (sig: SignatureData) => {
+    if (saveForReuse) window.pdfApi.addSavedSignature(sig).catch(() => {})
+    onConfirm(sig)
+  }
+
   const confirm = () => {
     const signature = currentSignature()
-    if (signature) onConfirm(signature)
+    if (signature) finish(signature)
   }
 
   const saveCurrentSignature = async () => {
@@ -310,8 +328,8 @@ export function SignatureDialog({
     setSavingSignature(true)
     setLibraryError(null)
     try {
-      const saved = await saveSignature(label, signature)
-      setSavedSignatures((items) => [saved, ...items])
+      const stored = await saveSignature(label, signature)
+      setSavedSignatures((items) => [stored, ...items])
       setSignatureLabel('')
     } catch (error) {
       setLibraryError(
@@ -338,32 +356,61 @@ export function SignatureDialog({
       : mode === 'image'
         ? processedImg !== null
         : typed.trim().length > 0
+  const hasSavedSignatures = savedSignatures.length > 0 || saved.length > 0
 
   return (
     <div className="pdf-modal-mask" onClick={onCancel}>
-      <div className="pdf-modal pdf-sign-dialog" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="pdf-modal pdf-sign-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('signTitle')}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="pdf-modal-title">{t('signTitle')}</div>
         <section className="pdf-sign-library" aria-label={t('signSaved')}>
           <div className="pdf-sign-library-title">{t('signSaved')}</div>
-          {savedSignatures.length > 0 ? (
+          {hasSavedSignatures ? (
             <div className="pdf-sign-library-grid">
-              {savedSignatures.map((saved) => (
-                <div className="pdf-sign-library-card" key={saved.id}>
+              {savedSignatures.map((stored) => (
+                <div className="pdf-sign-library-card" key={`library-${stored.id}`}>
                   <button
                     className="pdf-sign-library-use"
-                    title={`${t('signPlace')}: ${saved.label}`}
-                    onClick={() => onConfirm(saved.data)}
+                    title={`${t('signPlace')}: ${stored.label}`}
+                    onClick={() => onConfirm(stored.data)}
                   >
                     <span className="pdf-sign-library-preview">
-                      <SignaturePreview signature={saved.data} color={color} />
+                      <SignaturePreview signature={stored.data} color={color} />
                     </span>
-                    <span className="pdf-sign-library-label">{saved.label}</span>
+                    <span className="pdf-sign-library-label">{stored.label}</span>
                   </button>
                   <button
                     className="pdf-sign-library-delete"
                     title={t('deleteAnnotation')}
-                    aria-label={`${t('deleteAnnotation')}: ${saved.label}`}
-                    onClick={() => void removeSavedSignature(saved.id)}
+                    aria-label={`${t('deleteAnnotation')}: ${stored.label}`}
+                    onClick={() => void removeSavedSignature(stored.id)}
+                  >
+                    <span aria-hidden="true">&times;</span>
+                  </button>
+                </div>
+              ))}
+              {saved.map((item) => (
+                <div className="pdf-sign-library-card" key={`saved-${item.id}`}>
+                  <button
+                    className="pdf-sign-library-use"
+                    title={t('signPlace')}
+                    onClick={() => onConfirm(item.data)}
+                  >
+                    <span className="pdf-sign-library-preview">
+                      <SignaturePreview signature={item.data} color={color} />
+                    </span>
+                  </button>
+                  <button
+                    className="pdf-sign-library-delete"
+                    title={t('signSavedDelete')}
+                    aria-label={t('signSavedDelete')}
+                    onClick={() => removeSaved(item.id)}
                   >
                     <span aria-hidden="true">&times;</span>
                   </button>
@@ -450,9 +497,13 @@ export function SignatureDialog({
               onChange={(e) => void pickImage(e)}
             />
             {processedImg ? (
-              <div className="pdf-sign-imgbox" onClick={() => fileRef.current?.click()}>
+              <button
+                className="pdf-sign-imgbox"
+                title={t('signAddImage')}
+                onClick={() => fileRef.current?.click()}
+              >
                 <img className="pdf-sign-img" src={processedImg.url} alt="" />
-              </div>
+              </button>
             ) : (
               <button
                 className="pdf-sign-imgbox pdf-sign-imgbox-empty"
@@ -492,6 +543,14 @@ export function SignatureDialog({
             {t('save')}
           </button>
         </div>
+        <label className="pdf-sign-bw">
+          <input
+            type="checkbox"
+            checked={saveForReuse}
+            onChange={(e) => setSaveForReuse(e.target.checked)}
+          />
+          {t('signSave')}
+        </label>
         <div className="pdf-modal-actions">
           {mode === 'draw' && (
             <button className="pdf-modal-btn" onClick={clear}>

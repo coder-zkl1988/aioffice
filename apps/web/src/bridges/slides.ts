@@ -50,7 +50,6 @@ const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.
 type InsertImageResult = Awaited<ReturnType<SlidesApi['insertImage']>>
 type EditImageFillResult = Awaited<ReturnType<SlidesApi['editImageFill']>>
 type InsertMediaResult = Awaited<ReturnType<SlidesApi['insertMedia']>>
-type InsertModel3dResult = Awaited<ReturnType<SlidesApi['insertModel3d']>>
 let pendingPath = consumePendingPath()
 let sessionId: string | null = null
 let currentFile: { path: string; name: string } | null = null
@@ -330,15 +329,19 @@ async function insertImage(slideIndex: number, fitWidthPx: number): Promise<Inse
   ])
 }
 
-async function editImageFill(op: {
-  slideIndex: number
-  sourceId: string
-}): Promise<EditImageFillResult> {
+async function editImageFill(
+  op: Parameters<SlidesApi['editImageFill']>[0],
+): Promise<EditImageFillResult> {
+  // the desktop handler reads the picker in main; the web bridge needs the
+  // target element from the renderer
+  const sourceId = (op as { sourceId?: string }).sourceId
+  if (!sourceId) return null
   const file = await pickSingleFile('.png,.jpg,.jpeg,.gif,.bmp,.webp,.tif,.tiff')
   if (!file) return null
   return remoteCall<EditImageFillResult>('editImageFillBytes', [
     {
       ...op,
+      sourceId,
       base64: base64FromBytes(await file.arrayBuffer()),
       ext: fileExtension(file),
     },
@@ -366,16 +369,25 @@ async function insertMedia(
   ])
 }
 
-async function insertModel3d(slideIndex: number, fitWidthPx: number): Promise<InsertModel3dResult> {
+/** Upstream's 3D insert split into a browser file pick plus a bytes-based add. */
+async function pickModel3d(): Promise<Awaited<ReturnType<SlidesApi['pickModel3d']>>> {
   const file = await pickSingleFile('.glb,.gltf,model/gltf-binary,model/gltf+json')
   if (!file) return null
-  return remoteCall<InsertModel3dResult>('addModel3dBytes', [
+  return { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) }
+}
+
+async function addModel3d(
+  op: Parameters<SlidesApi['addModel3d']>[0],
+): Promise<Awaited<ReturnType<SlidesApi['addModel3d']>>> {
+  // the web server derives placement/aspect from the bytes; the renderer's
+  // poster frame is not produced in the browser
+  return remoteCall<Awaited<ReturnType<SlidesApi['addModel3d']>>>('addModel3dBytes', [
     {
-      slideIndex,
-      base64: base64FromBytes(await file.arrayBuffer()),
-      ext: fileExtension(file),
-      fitWidthPx,
-      name: file.name,
+      slideIndex: op.slideIndex,
+      base64: base64FromBytes(op.bytes.buffer as ArrayBuffer),
+      ext: 'glb',
+      fitWidthPx: op.fitWidthPx,
+      name: op.name,
     },
   ])
 }
@@ -388,26 +400,22 @@ async function fetchRemoteImage(
   return image
 }
 
-async function insertImageUrl(op: {
-  slideIndex: number
-  url: string
-  xPx: number
-  yPx: number
-  wPx: number
-  hPx: number
-  fitWidthPx: number
-}): Promise<Awaited<ReturnType<SlidesApi['insertImageUrl']>>> {
-  const image = await fetchRemoteImage(op.url)
+async function insertImageUrl(
+  op: Parameters<SlidesApi['insertImageUrl']>[0],
+): Promise<Awaited<ReturnType<SlidesApi['insertImageUrl']>>> {
+  // attachment payloads arrive inline; only bare URLs need a fetch
+  const image = op.base64
+    ? { base64: op.base64, ext: op.ext ?? 'png' }
+    : await fetchRemoteImage(op.url ?? '')
   return remoteCall('addImageBytes', [{ ...op, base64: image.base64, ext: image.ext }])
 }
 
-async function replacePictureUrl(op: {
-  slideIndex: number
-  sourceId: string
-  url: string
-  keepSrcRect?: boolean
-}): Promise<Awaited<ReturnType<SlidesApi['replacePictureUrl']>>> {
-  const image = await fetchRemoteImage(op.url)
+async function replacePictureUrl(
+  op: Parameters<SlidesApi['replacePictureUrl']>[0],
+): Promise<Awaited<ReturnType<SlidesApi['replacePictureUrl']>>> {
+  const image = op.base64
+    ? { base64: op.base64, ext: op.ext ?? 'png' }
+    : await fetchRemoteImage(op.url ?? '')
   return remoteCall('replacePictureBytes', [
     {
       slideIndex: op.slideIndex,
@@ -456,6 +464,11 @@ async function renderHtmlPage(html: string, width: number, height: number): Prom
   }
 }
 
+// Fork-only HTML→PPTX importer. Upstream's `localGeneratePage` replaced its
+// call sites in the AI panel (native slide specs built server-side), but the
+// bridge keeps it for the legacy multi-page HTML path and for renderers that
+// reach it through the SlidesApi proxy.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- retained legacy path, see above
 async function htmlToPptx(
   pagesHtml: string[],
   fitWidthPx: number,
@@ -565,6 +578,26 @@ async function generateWebSlidePage(
   }
 }
 
+/** Build one native slide from the AI panel's JSON page spec (server-side pptx builder). */
+async function localGeneratePage(
+  op: Parameters<SlidesApi['localGeneratePage']>[0],
+): Promise<Awaited<ReturnType<SlidesApi['localGeneratePage']>>> {
+  return remoteCall<Awaited<ReturnType<SlidesApi['localGeneratePage']>>>('localGeneratePage', [op])
+}
+
+/** Land generated page markers (one-slide pptx files) into the current deck. */
+async function landGeneratedPages(
+  pageMarkers: string[],
+  fitWidthPx: number,
+  mode?: 'replace' | 'append' | 'replace_at' | 'insert_at',
+  atIndex?: number,
+  deckName?: string,
+): Promise<Awaited<ReturnType<SlidesApi['landGeneratedPages']>>> {
+  return remoteCall<Awaited<ReturnType<SlidesApi['landGeneratedPages']>>>('landGeneratedPages', [
+    { pageMarkers, fitWidthPx, mode, atIndex, deckName },
+  ])
+}
+
 function menuCommands(callback: Parameters<SlidesApi['onMenuCommand']>[0]): () => void {
   const listener = (event: KeyboardEvent) => {
     if (!(event.metaKey || event.ctrlKey)) return
@@ -589,27 +622,55 @@ function menuCommands(callback: Parameters<SlidesApi['onMenuCommand']>[0]): () =
   return () => window.removeEventListener('keydown', listener)
 }
 
-async function exportPdf(op: {
-  pngsBase64: string[]
-  widthPx: number
-  heightPx: number
-}): Promise<{ ok: boolean; path?: string; error?: string }> {
+/** Rasterize one exported page: the desktop print window accepts vector SVG,
+    the browser build turns it into a bitmap with an off-screen canvas. */
+async function rasterizeExportPage(
+  page: Parameters<SlidesApi['exportPdf']>[0]['pages'][number],
+  widthPx: number,
+  heightPx: number,
+  fontCss?: string,
+): Promise<string> {
+  if ('png' in page) return page.png
+  // font faces the SVG text relies on are inlined as @font-face rules
+  const markup = fontCss
+    ? page.svg.replace(/(<svg[^>]*>)/, `$1<style>${fontCss}</style>`)
+    : page.svg
+  const image = new Image()
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve()
+    image.onerror = () => reject(new Error('无法渲染 PDF 页面'))
+    image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(markup)}`
+  })
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(widthPx))
+  canvas.height = Math.max(1, Math.round(heightPx))
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('无法创建画布')
+  context.drawImage(image, 0, 0, canvas.width, canvas.height)
+  return canvas.toDataURL('image/png').split(',')[1] ?? ''
+}
+
+async function exportPdf(
+  op: Parameters<SlidesApi['exportPdf']>[0],
+): Promise<Awaited<ReturnType<SlidesApi['exportPdf']>>> {
   try {
     const document = await PDFDocument.create()
-    for (const png of op.pngsBase64) {
+    for (const pageDef of op.pages) {
+      const png = await rasterizeExportPage(pageDef, op.widthPx, op.heightPx, op.fontCss)
       const image = await document.embedPng(bytesFromBase64(png))
       const page = document.addPage([op.widthPx, op.heightPx])
       page.drawImage(image, { x: 0, y: 0, width: op.widthPx, height: op.heightPx })
     }
     const bytes = await document.save()
+    const name = op.filePath.split(/[\\/]/).pop() || exportPdfName
     await writeBrowserFile({
-      name: exportPdfName,
+      name,
       extension: '.pdf',
       mime: 'application/pdf',
       blob: new Blob([new Uint8Array(bytes).buffer as ArrayBuffer], { type: 'application/pdf' }),
       forcePicker: true,
     })
-    return { ok: true, path: exportPdfName }
+    return { ok: true, path: name }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
@@ -647,9 +708,10 @@ const localApi: Partial<SlidesApi> = {
   imageSearch: webImageSearch,
   generateImage: webGenerateImage,
   analyzeMedia: webAnalyzeMedia,
-  htmlToPptx,
   cloudGenStatus: async () => ({ enabled: hasConfiguredWebAi() }),
   cloudGeneratePage: generateWebSlidePage,
+  localGeneratePage,
+  landGeneratedPages,
   clipboardExternal: async () => {
     try {
       if (navigator.clipboard.read) {
@@ -678,7 +740,8 @@ const localApi: Partial<SlidesApi> = {
   replacePictureUrl,
   editImageFill,
   insertMedia,
-  insertModel3d,
+  pickModel3d,
+  addModel3d,
   pickExportDir: async () => 'browser-downloads',
   exportImages: async (op) => {
     const paths = op.pngsBase64.map((png, index) => {

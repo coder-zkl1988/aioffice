@@ -1,21 +1,26 @@
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 
-import { applyCellEditsToXlsx, assertOnlyTouchedEntriesChanged } from '../src/gateway/xlsx-gateway'
-import { relsPathFor, resolveRelTarget } from '../src/gateway/xlsx-drawing-add'
+import {
+  applyCellEditsToXlsx,
+  assertOnlyTouchedEntriesChanged,
+} from '@genoffice/xlsx-gateway/gateway/xlsx-gateway'
+import { relsPathFor, resolveRelTarget } from '@genoffice/xlsx-gateway/gateway/xlsx-drawing-add'
 import {
   classifyRemovedSheetRels,
   definedNamesUseToken,
   formatSheetQualifier,
   partPathForRels,
+  pivotCacheReadsFromSheet,
   prepareClonedSheetRels,
   renameSheetInFormula,
+  renameSheetInPivotCacheSource,
   sanitizeClonedWorksheetXml,
   SheetEditError,
   stripPageSetupRelIds,
   tableDisplayName,
   validateSheetName,
-} from '../src/gateway/xlsx-sheets'
+} from '@genoffice/xlsx-gateway/gateway/xlsx-sheets'
 import {
   buildCompatibilityFixture,
   buildSatelliteSheetFixture,
@@ -273,6 +278,14 @@ describe('sheet remove save', () => {
       'xl/comments1.xml',
     )
     expect(resolveRelTarget('xl/charts/chart1.xml', 'colors1.xml')).toBe('xl/charts/colors1.xml')
+    expect(resolveRelTarget('xl/workbook.xml', 'worksheets/sheet%201.xml')).toBe(
+      'xl/worksheets/sheet 1.xml',
+    )
+    expect(resolveRelTarget('xl/worksheets/sheet2.xml', '../media/image%20\u4e00.png')).toBe(
+      'xl/media/image \u4e00.png',
+    )
+    expect(() => resolveRelTarget('xl/workbook.xml', 'worksheets/%ZZ.xml')).toThrow()
+    expect(() => resolveRelTarget('xl/workbook.xml', '../../outside.xml')).toThrow()
     expect(relsPathFor('xl/drawings/drawing1.xml')).toBe('xl/drawings/_rels/drawing1.xml.rels')
     expect(partPathForRels('xl/drawings/_rels/drawing1.xml.rels')).toBe('xl/drawings/drawing1.xml')
     expect(partPathForRels('_rels/.rels')).toBe('')
@@ -294,6 +307,34 @@ describe('sheet remove save', () => {
       '</definedNames></workbook>'
     expect(definedNamesUseToken(global, 'DecoTable[', new Set([1]))).toBe(true)
     expect(definedNamesUseToken(global, 'OtherTable[', new Set())).toBe(false)
+    // table names are case-insensitive in Excel
+    const cased =
+      '<workbook><definedNames>' +
+      '<definedName name="Global">SUM(decotable[Amt])</definedName>' +
+      '</definedNames></workbook>'
+    expect(definedNamesUseToken(cased, 'DecoTable[', new Set())).toBe(true)
+  })
+
+  it('pivotCacheReadsFromSheet matches the worksheetSource sheet case-insensitively', () => {
+    const cache =
+      '<pivotCacheDefinition><cacheSource type="worksheet">' +
+      '<worksheetSource ref="A1:B9" sheet="P&amp;L Data"/>' +
+      '</cacheSource></pivotCacheDefinition>'
+    expect(pivotCacheReadsFromSheet(cache, 'P&L Data')).toBe(true)
+    expect(pivotCacheReadsFromSheet(cache, 'p&l data')).toBe(true)
+    expect(pivotCacheReadsFromSheet(cache, 'Other')).toBe(false)
+    expect(pivotCacheReadsFromSheet('<pivotCacheDefinition/>', 'P&L Data')).toBe(false)
+  })
+
+  it('renameSheetInPivotCacheSource rewrites only matching sources and encodes the new name', () => {
+    const cache =
+      '<pivotCacheDefinition><cacheSource type="worksheet">' +
+      '<worksheetSource ref="A1:B9" sheet="Data"/>' +
+      '</cacheSource></pivotCacheDefinition>'
+    expect(renameSheetInPivotCacheSource(cache, 'Data', 'P&L Data')).toContain(
+      'sheet="P&amp;L Data"',
+    )
+    expect(renameSheetInPivotCacheSource(cache, 'Other', 'X')).toBe(cache)
   })
 
   it('cascade-removes the drawings, charts, images, comments, VML, and tables the sheet owns', async () => {
@@ -395,6 +436,48 @@ describe('sheet remove save', () => {
         order: ['Keep'],
       }),
     ).rejects.toThrow(/table "DecoTable"/)
+  })
+
+  it('fails closed on a differently-cased structured reference into the table', async () => {
+    await expect(
+      applyCellEditsToXlsx(await buildSatelliteSheetFixture({ tableRefLower: true }), [], [], [], {
+        renames: [],
+        additions: [],
+        removals: ['Deco'],
+        order: ['Keep'],
+      }),
+    ).rejects.toThrow(/table "DecoTable"/)
+  })
+
+  it('fails closed when a pivot cache reads its source rows from the removed sheet', async () => {
+    await expect(
+      applyCellEditsToXlsx(
+        await buildSatelliteSheetFixture({ pivotSourceCache: true }),
+        [],
+        [],
+        [],
+        { renames: [], additions: [], removals: ['Deco'], order: ['Keep'] },
+      ),
+    ).rejects.toThrow(/source data/)
+  })
+
+  it('rewrites a pivot cache worksheetSource when its source sheet is renamed', async () => {
+    const mutation = await applyCellEditsToXlsx(
+      await buildSatelliteSheetFixture({ pivotSourceCache: true }),
+      [],
+      [],
+      [],
+      {
+        renames: [{ sheetName: 'Deco', newName: 'Deco 2' }],
+        additions: [],
+        removals: [],
+        order: ['Keep', 'Deco 2'],
+      },
+    )
+    expect(() => assertOnlyTouchedEntriesChanged(mutation)).not.toThrow()
+    const cache = await entryText(mutation.buffer, 'xl/pivotCache/pivotCacheDefinition1.xml')
+    expect(cache).toContain('sheet="Deco 2"')
+    expect(cache).not.toContain('sheet="Deco"')
   })
 })
 

@@ -51,6 +51,7 @@ import {
   listMasterParts,
   materializeSlide,
   mergeTableCells,
+  mergeSlideFromPptx,
   moveSection,
   moveSlide,
   openPptx,
@@ -71,6 +72,7 @@ import {
   resetSlideLayout,
   removeSection,
   renameSection,
+  resetSlideBackground,
   savePptx,
   setElementConnection,
   setElementFont,
@@ -87,6 +89,8 @@ import {
   setSlideAdvanceTime,
   setSlideAnimations,
   setSlideBackground,
+  setSlideBackgroundImage,
+  setSlideBgGraphicsHidden,
   setSlideHidden,
   setSlideNotes,
   setSlideTransition,
@@ -106,7 +110,17 @@ import {
   type TextElement,
 } from '@genoffice/pptx-engine'
 import { buildRenderSlide, EMU_PER_PX_96, type RenderSlide } from '@genoffice/pptx-render'
-import { applyEditParagraphs, collectParagraphFormatPatches } from '../../slides/src/main/edit-text'
+// edit-text lives in @genoffice/pptx-ops upstream; the package index also pulls
+// the prompt-doc module (`?raw` .md imports) which the plain-esbuild web server
+// bundle cannot load, so import the module itself
+import {
+  applyEditParagraphs,
+  collectParagraphFormatPatches,
+} from '../../../packages/pptx-ops/src/edit-text'
+// the page-spec builder keeps its prompts out of the module graph (plain Node),
+// so the web server can build one-slide pptx files the same way the desktop app does
+import { buildPagePptx, parsePageSpec } from '../../../packages/pipelines/src/slides/page-spec'
+import { validatePublicResourceUrl } from './security'
 import { tiffToPng } from '../../slides/src/main/tiff-decode'
 import type {
   AddBlankSlideOp,
@@ -232,6 +246,7 @@ function safeName(value: string): string {
   const name = value
     .split(/[\\/]/)
     .pop()
+    // eslint-disable-next-line no-control-regex -- stripping control chars is the point here
     ?.replace(/[\u0000-\u001f]/g, '')
     .trim()
   if (!name || name.length > 255) throw new Error('演示文稿名称无效')
@@ -480,9 +495,48 @@ function safeFitWidth(value: number): number {
   return value
 }
 
+const generatedPageImageExt: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+  'image/tiff': 'tif',
+  'image/svg+xml': 'svg',
+}
+
+/**
+ * Download an image for the one-page builder through the same public-URL gate
+ * as every other remote resource this server fetches. Failures return null so
+ * the page still lands without the picture.
+ */
+async function fetchGeneratedPageImage(
+  url: string,
+): Promise<{ bytes: Uint8Array; ext: string } | null> {
+  try {
+    const safe = await validatePublicResourceUrl(url)
+    const response = await fetch(safe, {
+      signal: AbortSignal.timeout(15_000),
+      headers: { Accept: 'image/*' },
+    })
+    if (!response.ok) return null
+    const mime = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() || ''
+    const ext = generatedPageImageExt[mime]
+    if (!ext) return null
+    const declared = Number(response.headers.get('content-length') || 0)
+    if (declared > 20 * 1024 * 1024) return null
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    return bytes.length === 0 || bytes.length > 20 * 1024 * 1024 ? null : { bytes, ext }
+  } catch {
+    return null
+  }
+}
+
 export class SlidesWebService {
   private readonly sessions = new Map<string, SlidesSession>()
   private slideClipboard: { bundle: SlideBundle; png?: string } | null = null
+  /** One-slide pptx files built by `localGeneratePage`, keyed by their marker */
+  private readonly generatedPages = new Map<string, Uint8Array>()
 
   constructor(
     private readonly maxPresentationBytes = 96 * 1024 * 1024,
@@ -595,6 +649,19 @@ export class SlidesWebService {
           op as {
             pptxBase64: string
             fitWidthPx: number
+            mode?: 'replace' | 'append' | 'replace_at' | 'insert_at'
+            atIndex?: number
+            deckName?: string
+          },
+        )
+      case 'localGeneratePage':
+        return this.localGeneratePage(op as { specJson?: unknown })
+      case 'landGeneratedPages':
+        return this.landGeneratedPages(
+          session,
+          op as {
+            pageMarkers?: unknown
+            fitWidthPx?: unknown
             mode?: 'replace' | 'append' | 'replace_at' | 'insert_at'
             atIndex?: number
             deckName?: string
@@ -956,6 +1023,73 @@ export class SlidesWebService {
       const previous = session.undo.pop()
       if (previous) restore(session, previous)
       throw error
+    }
+  }
+
+  /**
+   * Build one native slide from the JSON page spec the app's AI panel writes
+   * (the same spec format the desktop main process consumes) and hand back a
+   * marker that `landGeneratedPages` redeems.
+   */
+  private async localGeneratePage(op: {
+    specJson?: unknown
+  }): Promise<{ ok: boolean; marker?: string; error?: string; imageFailures?: string[] }> {
+    const parsed = parsePageSpec(String(op?.specJson ?? ''))
+    if (!parsed.ok) return { ok: false, error: parsed.error }
+    try {
+      const { bytes, imageFailures } = await buildPagePptx(parsed.spec, {
+        fetchImage: fetchGeneratedPageImage,
+      })
+      const marker = `webgen:${randomUUID()}`
+      this.generatedPages.set(marker, bytes)
+      // markers are redeemed within the same AI run; bound the map regardless
+      if (this.generatedPages.size > 256) {
+        const oldest = this.generatedPages.keys().next().value
+        if (oldest !== undefined) this.generatedPages.delete(oldest)
+      }
+      return { ok: true, marker, ...(imageFailures.length ? { imageFailures } : {}) }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  /** Merge the marker pages into one pptx and land it through the import path. */
+  private async landGeneratedPages(
+    session: SlidesSession,
+    op: {
+      pageMarkers?: unknown
+      fitWidthPx?: unknown
+      mode?: 'replace' | 'append' | 'replace_at' | 'insert_at'
+      atIndex?: number
+      deckName?: string
+    },
+  ): Promise<unknown> {
+    try {
+      const markers = Array.isArray(op.pageMarkers) ? op.pageMarkers : []
+      if (markers.length === 0 || markers.length > 100) throw new Error('没有可落地的生成页')
+      const pages: Uint8Array[] = []
+      for (const marker of markers) {
+        const bytes = typeof marker === 'string' ? this.generatedPages.get(marker) : undefined
+        if (!bytes) throw new Error('未知的生成页标记')
+        pages.push(bytes)
+      }
+      let merged = pages[0]!
+      if (pages.length > 1) {
+        const base = await openPptx(merged)
+        for (const one of pages.slice(1)) await mergeSlideFromPptx(base, one)
+        for (const slide of base.deck.slides) promoteSlideBackground(slide, base.deck.size)
+        merged = await savePptx(base)
+      }
+      return await this.importGenerated(session, {
+        pptxBase64: Buffer.from(merged).toString('base64'),
+        fitWidthPx:
+          typeof op.fitWidthPx === 'number' ? safeFitWidth(op.fitWidthPx) : safeFitWidth(1280),
+        mode: op.mode,
+        atIndex: op.atIndex,
+        deckName: op.deckName,
+      })
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) }
     }
   }
 
@@ -1347,7 +1481,48 @@ export class SlidesWebService {
         : [session.opened.deck.slides[op.slideIndex]].filter((slide): slide is Slide => !!slide)
     if (targets.length === 0) return null
     pushHistory(session)
-    for (const slide of targets) setSlideBackground(slide, op.color)
+    if (op.kind === 'image') {
+      // the browser port has no server-side file picker; a reuse-only op
+      // (mode change / apply-to-all) reads the already-landed background
+      if (op.pick !== false || op.sourceSlideIndex === undefined) {
+        session.undo.pop()
+        return null
+      }
+      const source = session.opened.deck.slides[op.sourceSlideIndex]?.background
+      if (source?.type !== 'image') {
+        session.undo.pop()
+        return null
+      }
+      let landed: string | null = null
+      for (const slide of targets) {
+        landed =
+          setSlideBackgroundImage(
+            session.opened,
+            slide,
+            landed ? { mediaPath: landed } : { mediaPath: source.mediaRef },
+            op.mode === 'tile',
+          ) ?? landed
+      }
+      if (!landed) {
+        session.undo.pop()
+        return null
+      }
+    } else {
+      for (const slide of targets) {
+        if (op.kind === 'solid') setSlideBackground(session.opened, slide, op.color)
+        else if (op.kind === 'gradient') {
+          const stops = [
+            { pos: 0, color: op.from },
+            { pos: 1, color: op.to },
+          ]
+          setSlideBackground(session.opened, slide, {
+            stops,
+            ...(op.radial ? { radial: true } : { angle: Math.round((op.angleDeg ?? 0) * 60000) }),
+          })
+        } else if (op.kind === 'reset') resetSlideBackground(session.opened, slide)
+        else setSlideBgGraphicsHidden(session.opened, slide, op.hidden)
+      }
+    }
     session.fitWidthPx = op.fitWidthPx
     return renderSlides(session)
   }
@@ -1391,7 +1566,7 @@ export class SlidesWebService {
     const slide = session.opened.deck.slides[op.slideIndex]
     if (!slide) return null
     pushHistory(session)
-    if (!deleteElement(slide, op.sourceId)) {
+    if (!deleteElement(session.opened, slide, op.sourceId)) {
       session.undo.pop()
       return null
     }
@@ -1745,14 +1920,32 @@ export class SlidesWebService {
     const slide = session.opened.deck.slides[op.slideIndex]
     if (!slide) return null
     pushHistory(session)
+    // upstream's op carries either an explicit frame (viewport px) or the
+    // image's natural pixel size the frame is derived from; both are supported
+    let frame: { xPx: number; yPx: number; wPx: number; hPx: number }
+    if ('xPx' in op) {
+      frame = { xPx: op.xPx, yPx: op.yPx, wPx: op.wPx, hPx: op.hPx }
+    } else {
+      const baseWidthPx = session.opened.deck.size.cx / EMU_PER_PX_96
+      const toViewport = op.fitWidthPx / baseWidthPx
+      const wPx = Math.max(1, op.naturalPx.width * toViewport)
+      const hPx = Math.max(1, op.naturalPx.height * toViewport)
+      const pageH = (session.opened.deck.size.cy / EMU_PER_PX_96) * toViewport
+      frame = {
+        xPx: (op.centerPx?.x ?? op.fitWidthPx / 2) - wPx / 2,
+        yPx: (op.centerPx?.y ?? pageH / 2) - hPx / 2,
+        wPx,
+        hPx,
+      }
+    }
     const element = addPicture(session.opened, slide, {
       bytes: new Uint8Array(Buffer.from(op.base64, 'base64')),
       ext: op.ext,
       offset: {
-        x: toEmu(session, op.fitWidthPx, op.xPx),
-        y: toEmu(session, op.fitWidthPx, op.yPx),
-        cx: Math.max(1, toEmu(session, op.fitWidthPx, op.wPx)),
-        cy: Math.max(1, toEmu(session, op.fitWidthPx, op.hPx)),
+        x: toEmu(session, op.fitWidthPx, frame.xPx),
+        y: toEmu(session, op.fitWidthPx, frame.yPx),
+        cx: Math.max(1, toEmu(session, op.fitWidthPx, frame.wPx)),
+        cy: Math.max(1, toEmu(session, op.fitWidthPx, frame.hPx)),
       },
       ...(op.name ? { name: op.name } : {}),
     })
@@ -1787,6 +1980,8 @@ export class SlidesWebService {
 
   private addMediaBytes(session: SlidesSession, op: AddMediaBytesOp): unknown {
     if (!session.opened.deck.slides[op.slideIndex]) return null
+    // the browser port only accepts inline bytes (a path would name a desktop file)
+    if (!('base64' in op)) return null
     const deckSize = session.opened.deck.size
     const cx = Math.round(deckSize.cx * 0.6)
     const cy = Math.round((cx * 9) / 16)
@@ -1820,13 +2015,10 @@ export class SlidesWebService {
     if (!slide) return null
     pushHistory(session)
     if (
-      !setElementImageFill(
-        session.opened,
-        slide,
-        op.sourceId,
-        new Uint8Array(Buffer.from(op.base64, 'base64')),
-        op.ext,
-      )
+      !setElementImageFill(session.opened, slide, op.sourceId, {
+        bytes: new Uint8Array(Buffer.from(op.base64, 'base64')),
+        ext: op.ext,
+      })
     ) {
       session.undo.pop()
       return null
@@ -2202,7 +2394,7 @@ export class SlidesWebService {
     const master = session.masterEdit
     if (!master) return null
     pushHistory(session)
-    if (!deleteElement(master.slide, op.sourceId)) {
+    if (!deleteElement(session.opened, master.slide, op.sourceId)) {
       session.undo.pop()
       return null
     }

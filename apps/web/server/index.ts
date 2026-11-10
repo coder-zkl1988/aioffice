@@ -748,14 +748,18 @@ async function handlePdfPagePreview(
   ) {
     throw new Error('PDF 页面预览请求无效')
   }
+  const preview = await renderPagePreviewPng(pdfPayload(body), {
+    pageIndex,
+    excludeRects,
+    clip,
+    pxWidth,
+    rotate,
+  })
+  // the PDF app's PagePreviewResult carries the bitmap plus the erased-run
+  // report; the web bridge passes both through
   json(response, 200, {
-    pngBase64: await renderPagePreviewPng(pdfPayload(body), {
-      pageIndex,
-      excludeRects,
-      clip,
-      pxWidth,
-      rotate,
-    }),
+    pngBase64: preview?.png ?? null,
+    textErased: preview?.textErased ?? [],
   })
 }
 

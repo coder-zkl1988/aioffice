@@ -65,7 +65,9 @@ async function persist(path: string, data: ArrayBuffer): Promise<void> {
   })
 }
 
-const pdfApi: PdfApi = {
+// The browser port implements the subset of the PDF API it can serve;
+// everything else is absent rather than stubbed.
+const pdfApi: Partial<PdfApi> = {
   consumePending: async () => {
     currentPath = consumePendingPath()
     return currentPath
@@ -311,7 +313,7 @@ const pdfApi: PdfApi = {
   onAiStream: onWebAiStream,
 }
 
-window.pdfApi = pdfApi
+window.pdfApi = pdfApi as unknown as PdfApi
 
 async function mobileScannerJson<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(new URL(path, document.baseURI), {

@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 
-import type { CellEdit, SheetStructuralOps } from '../gateway/xlsx-gateway'
-import { saveWorkbookViaSidecar } from '../gateway/xlsx-package-io'
-import type { SheetEditPlan } from '../gateway/xlsx-sheets'
+import type { CellEdit, SheetStructuralOps } from '@genoffice/xlsx-gateway/gateway/xlsx-gateway'
+import { saveWorkbookViaSidecar } from '@genoffice/xlsx-gateway/gateway/xlsx-package-io'
+import type { SheetEditPlan } from '@genoffice/xlsx-gateway/gateway/xlsx-sheets'
 import {
   workbookFileSchema,
   type WorkbookFile,
@@ -152,6 +152,14 @@ export async function writeWorkbookTo(
       sheetOps.push({ kind: op.kind, start: op.start, end: op.end, hidden: op.hidden })
     } else if ('before' in op) {
       sheetOps.push({ kind: op.kind, index: op.index, count: op.count, before: op.before })
+    } else if (op.kind === 'set-col-style') {
+      sheetOps.push({ kind: op.kind, start: op.start, end: op.end, style: op.style })
+    } else if (op.kind === 'set-outline-pr') {
+      sheetOps.push({
+        kind: op.kind,
+        summaryBelow: op.summaryBelow,
+        summaryRight: op.summaryRight,
+      })
     } else {
       sheetOps.push({ kind: op.kind, index: op.index, count: op.count })
     }
@@ -242,7 +250,11 @@ export async function writeWorkbookTo(
   }))
   const formulaValuesBySheet = new Map<
     string,
-    { row: number; column: number; value: string | number | boolean | null }[]
+    {
+      row: number
+      column: number
+      value: string | number | boolean | { error: string } | null
+    }[]
   >()
   for (const cell of request.formulaValues) {
     const sheetName = resolveSheetName(cell.sheetId)

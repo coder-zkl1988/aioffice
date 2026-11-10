@@ -186,7 +186,9 @@ function menuActions(callback: Parameters<DesktopApi['onMenuAction']>[0]): () =>
   return () => window.removeEventListener('keydown', listener)
 }
 
-const desktopApi: DesktopApi = {
+// The browser port implements the subset of the desktop API it can serve;
+// everything else is absent rather than stubbed.
+const desktopApi: Partial<DesktopApi> = {
   getLanguage: async () => readLanguage(),
   onLanguageChanged: () => () => {},
   getTheme: async () => readTheme(),
@@ -247,7 +249,7 @@ const desktopApi: DesktopApi = {
   getPathForFile: attachments.getPathForFile,
 }
 
-window.desktopApi = desktopApi
+window.desktopApi = desktopApi as unknown as DesktopApi
 
 window.addEventListener('pagehide', () => {
   for (const sessionId of sessionFiles.keys()) {

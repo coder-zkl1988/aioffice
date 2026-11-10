@@ -3,9 +3,9 @@ import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 
-import { blankXlsxBuffer } from '../../sheets/src/gateway/csv-import'
-import { readArchiveEntryText } from '../../sheets/src/gateway/xlsx-package-io'
-import { parsePivotDefinition } from '../../sheets/src/gateway/xlsx-pivot'
+import { blankXlsxBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import-xlsx'
+import { readArchiveEntryText } from '@genoffice/xlsx-gateway/gateway/xlsx-package-io'
+import { parsePivotDefinition } from '@genoffice/xlsx-gateway/gateway/xlsx-pivot'
 import {
   openWorkbookSession,
   sha256File,
@@ -59,6 +59,7 @@ interface SidecarRecalcCell {
 
 function safeName(value: string): string {
   const name = basename(value)
+    // eslint-disable-next-line no-control-regex -- stripping control chars is the point here
     .replace(/[\u0000-\u001f]/g, '')
     .trim()
   if (!name || name.length > 255) throw new Error('工作簿名称无效')

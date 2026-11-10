@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement } from 'react'
 import {
   DEFAULT_HEADER_FOOTER,
@@ -17,6 +17,8 @@ import type {
 } from './stamps'
 import type { MetadataInput } from '../shared/ipc'
 import type { TFunc } from './i18n/locale'
+import { ColorPickerPopover } from './ColorPicker'
+import { useModalDialog } from './modal-dialog'
 
 const WM_COLORS = ['#d0342c', '#8a8a8a', '#2b66ff', '#217346']
 const MAX_WATERMARK_IMAGE_BYTES = 20 * 1024 * 1024
@@ -118,11 +120,33 @@ export function StampDialog({
     totalPages > 1 ? `1-${totalPages}` : '1',
   )
   const [previewLayout, setPreviewLayout] = useState({ left: 50, top: 50, scale: 1 })
+  const [colorOpen, setColorOpen] = useState(false)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   const previewItemRef = useRef<HTMLSpanElement>(null)
   const previewDate = useRef(new Date())
   const previewDrag = useRef<{ pointerId: number; offsetX: number; offsetY: number } | null>(null)
+  const colorWrapRef = useRef<HTMLSpanElement>(null)
+  // The color popover handles Escape itself while open
+  const dialogRef = useModalDialog(onCancel, { escape: !colorOpen })
+
+  // outside-click / Escape close for the color popover (no blur close: the
+  // native "More Colors" dialog blurs the window while it is open)
+  useEffect(() => {
+    if (!colorOpen) return
+    const onDown = (event: MouseEvent): void => {
+      if (!colorWrapRef.current?.contains(event.target as Node)) setColorOpen(false)
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setColorOpen(false)
+    }
+    window.addEventListener('pointerdown', onDown, true)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [colorOpen])
 
   const hfUsed =
     hfEnabled &&
@@ -218,6 +242,9 @@ export function StampDialog({
     }
 
     updatePreviewLayout()
+    // jsdom-based tests (and any embedder without the observer) still render
+    // the preview from the initial measurement
+    if (typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(updatePreviewLayout)
     observer.observe(preview)
     return () => observer.disconnect()
@@ -304,7 +331,14 @@ export function StampDialog({
 
   return (
     <div className="pdf-modal-mask" onClick={onCancel}>
-      <div className="pdf-modal pdf-modal-wide" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="pdf-modal pdf-modal-wide"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('stampTitle')}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="pdf-modal-title">{t('stampTitle')}</div>
         <div className="pdf-sign-tabs">
           <button
@@ -570,27 +604,28 @@ export function StampDialog({
             )}
             {wm.type === 'text' && (
               <>
-                <label className="pdf-field">
+                <div className="pdf-field">
                   <span>{t('drawColor')}</span>
-                  <span className="pdf-color-row">
-                    {WM_COLORS.map((c) => (
-                      <button
-                        key={c}
-                        className={`pdf-color-dot${wm.color === c ? ' active' : ''}`}
-                        style={{ background: c }}
-                        aria-label={c}
-                        onClick={() => setWm({ ...wm, color: c })}
-                      />
-                    ))}
-                    <input
-                      className="pdf-tools-color-input"
-                      type="color"
-                      value={wm.color}
+                  <span ref={colorWrapRef} className="pdf-color-well-wrap">
+                    <button
+                      type="button"
+                      className="pdf-color-well"
+                      style={{ background: wm.color }}
                       aria-label={t('drawColor')}
-                      onChange={(event) => setWm({ ...wm, color: event.target.value })}
+                      aria-haspopup="dialog"
+                      aria-expanded={colorOpen}
+                      onClick={() => setColorOpen((v) => !v)}
                     />
+                    {colorOpen && (
+                      <ColorPickerPopover
+                        className="pdf-color-well-pop"
+                        value={wm.color}
+                        onPick={(hex) => setWm((prev) => ({ ...prev, color: hex }))}
+                        onClose={() => setColorOpen(false)}
+                      />
+                    )}
                   </span>
-                </label>
+                </div>
                 <div className="pdf-sign-hint">
                   @date · @date{'{yyyy/MM/dd}'} · @page · @filename · @title · @author · @uuid · @@
                 </div>
@@ -616,6 +651,7 @@ export function StampDialog({
                       ? {
                           left: previewLayout.left,
                           top: previewLayout.top,
+                          fontSize: Math.round(wm.sizeRatio * 236),
                           transform: `translate(-50%, -50%) rotate(${-wm.angle}deg) scale(${previewLayout.scale})`,
                         }
                       : { transform: `rotate(${-wm.angle}deg)` }),

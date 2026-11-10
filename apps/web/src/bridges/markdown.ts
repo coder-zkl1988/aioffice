@@ -34,7 +34,9 @@ async function persistMarkdown(path: string, name: string, text: string): Promis
   })
 }
 
-const markdownApi: MarkdownApi = {
+// The browser port implements the subset of the markdown API it can serve;
+// everything else is absent rather than stubbed.
+const markdownApi: Partial<MarkdownApi> = {
   consumePending: async () => {
     currentPath = consumePendingPath()
     return currentPath
@@ -139,7 +141,7 @@ const markdownApi: MarkdownApi = {
   webSearch,
 }
 
-window.markdownApi = markdownApi
+window.markdownApi = markdownApi as unknown as MarkdownApi
 
 if (!window.projectApi) {
   Object.defineProperty(window, 'projectApi', { value: undefined, configurable: true })

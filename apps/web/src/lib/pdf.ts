@@ -23,6 +23,7 @@ import type {
   MarkupInput,
   PageImageRef,
   PagePreviewRequest,
+  PagePreviewResult,
   SavePdfRequest,
   StampInput,
   TextEditFailure,
@@ -111,13 +112,19 @@ export async function renderWebPdfPageImage(
 export async function renderWebPdfPagePreview(
   source: ArrayBuffer,
   request: Omit<PagePreviewRequest, 'path'>,
-): Promise<string | null> {
-  return (
-    await pdfApi<{ pngBase64: string | null }>('images/preview', {
+): Promise<PagePreviewResult | null> {
+  const result = await pdfApi<{ pngBase64: string | null; textErased?: boolean[] }>(
+    'images/preview',
+    {
       pdfBase64: base64FromBytes(source),
       ...request,
-    })
-  ).pngBase64
+    },
+  )
+  // the server answers the PDF app's PagePreviewResult shape (bitmap +
+  // erased-run report); a failed render comes back as a null bitmap
+  return result.pngBase64 === null
+    ? null
+    : { png: result.pngBase64, textErased: result.textErased ?? [] }
 }
 
 export async function applyWebPdfImageEdits(
@@ -241,6 +248,7 @@ async function drawDrawing(
     }
     return
   }
+  if (drawing.kind !== 'line') return
   page.drawLine({
     start: { x: drawing.from[0], y: drawing.from[1] },
     end: { x: drawing.to[0], y: drawing.to[1] },

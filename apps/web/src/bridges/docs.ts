@@ -105,7 +105,14 @@ async function toOpenResult(
   name: string,
   data: ArrayBuffer,
 ): Promise<OpenFileResult> {
-  return { path, name, data, hash: await hash(data) }
+  // the desktop main process hands the renderer a one-shot URL; the browser
+  // port serves the same bytes as a blob URL
+  const dataUrl = URL.createObjectURL(
+    new Blob([data], {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    }),
+  )
+  return { path, name, dataUrl, hash: await hash(data) }
 }
 
 async function persistDocx(path: string, name: string, data: ArrayBuffer): Promise<void> {
@@ -173,7 +180,10 @@ function pickImage(): Promise<PickImageResult | null> {
   })
 }
 
-const desktop: DesktopApi = {
+// The browser port implements the subset of the desktop API it can serve;
+// everything else is absent rather than stubbed (upstream keeps growing the
+// contract with native-only capabilities).
+const desktop: Partial<DesktopApi> = {
   getLanguage: async () => readLanguage(),
   onLanguageChanged: () => () => {},
   getTheme: async () => readTheme(),
@@ -223,7 +233,10 @@ const desktop: DesktopApi = {
   pickImage,
   getAiSettings: async () => getWebAiSettings(),
   setAiSettings: async (settings) => saveWebAiSettings(settings),
-  print: async () => window.print(),
+  print: async () => {
+    window.print()
+    return { ok: true }
+  },
   exportPdf: async () => {
     window.print()
     return { ok: true, path: 'browser-print-dialog' }
@@ -270,7 +283,7 @@ const desktop: DesktopApi = {
   reportViewMenuState: () => {},
 }
 
-window.desktop = desktop
+window.desktop = desktop as unknown as DesktopApi
 
 if (!window.projectApi) {
   Object.defineProperty(window, 'projectApi', { value: undefined, configurable: true })

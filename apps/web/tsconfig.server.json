@@ -1,8 +1,22 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["ES2022", "DOM"],
-    "types": ["node"]
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    // the server imports workspace sources directly; their Vite-style `?raw`
+    // guide imports are declared in these package-level d.ts files
+    "paths": {
+      "@genoffice/pptx-engine": ["../../packages/pptx-engine/src/index.ts"],
+      "@genoffice/pptx-render": ["../../packages/pptx-render/src/index.ts"],
+      "@genoffice/xlsx-gateway/*": ["../../packages/xlsx-gateway/src/*"],
+      "@genoffice/pipelines/slides": ["../../packages/pipelines/src/slides/index.ts"]
+    }
   },
-  "include": ["server"]
+  "include": [
+    "server",
+    "../../packages/pptx-ops/src/raw.d.ts",
+    "../../packages/pipelines/src/raw.d.ts",
+    "../../packages/ui/src/env.d.ts"
+  ]
 }
