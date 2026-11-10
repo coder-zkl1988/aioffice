@@ -1,4 +1,7 @@
-import { fetchWithSsrfGuardResult, type FetchWithSsrfGuardOptions } from '@genoffice/electron-utils'
+import {
+  fetchWithSsrfGuardResult,
+  type FetchWithSsrfGuardOptions,
+} from '@genoffice/electron-utils/safe-remote-url'
 import type { PdfWebResourceKind, PdfWebResourceRequest, PdfWebResourceResult } from '../shared/ipc'
 
 const MAX_RESOURCE_BYTES: Record<PdfWebResourceKind, number> = {
