@@ -41,6 +41,7 @@ export const PDF_CHANNELS = {
   reduceFileSize: 'pdf:reduce-file-size',
   insertBlankPage: 'pdf:insert-blank-page',
   runTool: 'pdf:run-tool',
+  readBridgeWorkbook: 'pdf:read-bridge-workbook',
   fetchWebResource: 'pdf:fetch-web-resource',
   timestampToken: 'pdf:timestamp-token',
   splitPdf: 'pdf:split-pdf',
@@ -993,6 +994,10 @@ export type RunPdfToolResult =
   | { ok: true; canceled: true }
   | { ok: false; error: string }
 
+/** Bytes of a workbook this view exported as a table bridge (Sheets saved the edits in place) */
+export type ReadBridgeWorkbookResult =
+  { ok: true; bytes: Uint8Array } | { ok: false; error: string }
+
 /** Split the file into chunks of chunkSize pages: main shows a folder picker and writes one PDF per chunk */
 export interface SplitPdfRequest {
   path: string
@@ -1272,6 +1277,8 @@ export interface PdfApi {
   insertPdf(request: InsertPdfRequest): Promise<InsertPdfResult>
   insertBlankPage(request: InsertBlankPageRequest): Promise<InsertBlankPageResult>
   runTool(request: RunPdfToolRequest): Promise<RunPdfToolResult>
+  /** Read back a table-bridge workbook this view exported (no other paths are readable) */
+  readBridgeWorkbook(path: string): Promise<ReadBridgeWorkbookResult>
   /** Fetch public website content without exposing browser CORS or private-network access. */
   fetchWebResource(request: PdfWebResourceRequest): Promise<PdfWebResourceResult>
   requestTimestampToken(request: PdfTimestampTokenRequest): Promise<Uint8Array>

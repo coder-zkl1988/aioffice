@@ -220,6 +220,34 @@ export function detectPdfTableDetailsFromRuns(
   return tables
 }
 
+/**
+ * The detected table's footprint in PDF user space (y up), the same convention as
+ * search.ts hit rects: a run's box is [x, baselineY, x + width, baselineY + height].
+ * Empty tables have no text and yield a zero rect.
+ */
+export function detectedTableBounds(table: PdfDetectedTable): {
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+} {
+  let x0 = Number.POSITIVE_INFINITY
+  let y0 = Number.POSITIVE_INFINITY
+  let x1 = Number.NEGATIVE_INFINITY
+  let y1 = Number.NEGATIVE_INFINITY
+  for (const row of table.rows) {
+    for (const cell of row) {
+      for (const run of cell.runs) {
+        x0 = Math.min(x0, run.x)
+        y0 = Math.min(y0, run.y)
+        x1 = Math.max(x1, run.x + run.width)
+        y1 = Math.max(y1, run.y + run.height)
+      }
+    }
+  }
+  return Number.isFinite(x0) ? { x0, y0, x1, y1 } : { x0: 0, y0: 0, x1: 0, y1: 0 }
+}
+
 function textRuns(items: RawTextItem[]): PdfTableTextRun[] {
   return items.flatMap((item) => {
     if (!item.str?.trim() || !item.transform || item.transform.length < 6) return []
@@ -236,12 +264,13 @@ function textRuns(items: RawTextItem[]): PdfTableTextRun[] {
   })
 }
 
-export async function extractPdfTables(
+async function extractTablesFromPages<T>(
   document: PDFDocumentProxy,
   pageIndexes: number[],
   options: PdfTableDetectionOptions,
-): Promise<PdfExtractedTable[]> {
-  const tables: PdfExtractedTable[] = []
+  detect: (pageNumber: number, runs: PdfTableTextRun[], options: PdfTableDetectionOptions) => T[],
+): Promise<T[]> {
+  const tables: T[] = []
   for (const pageIndex of pageIndexes) {
     if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= document.numPages) {
       throw new Error('Table export page indexes contain an invalid page')
@@ -249,16 +278,27 @@ export async function extractPdfTables(
     const page = await document.getPage(pageIndex + 1)
     try {
       const content = await page.getTextContent()
-      tables.push(
-        ...detectPdfTablesFromRuns(
-          pageIndex + 1,
-          textRuns(content.items as RawTextItem[]),
-          options,
-        ),
-      )
+      tables.push(...detect(pageIndex + 1, textRuns(content.items as RawTextItem[]), options))
     } finally {
       page.cleanup()
     }
   }
   return tables
+}
+
+export function extractPdfTables(
+  document: PDFDocumentProxy,
+  pageIndexes: number[],
+  options: PdfTableDetectionOptions,
+): Promise<PdfExtractedTable[]> {
+  return extractTablesFromPages(document, pageIndexes, options, detectPdfTablesFromRuns)
+}
+
+/** Same detection as extractPdfTables but keeps each cell's runs (geometry and source spans) */
+export function extractPdfTableDetails(
+  document: PDFDocumentProxy,
+  pageIndexes: number[],
+  options: PdfTableDetectionOptions,
+): Promise<PdfDetectedTable[]> {
+  return extractTablesFromPages(document, pageIndexes, options, detectPdfTableDetailsFromRuns)
 }

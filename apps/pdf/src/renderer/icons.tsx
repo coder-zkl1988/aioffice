@@ -73,6 +73,12 @@ export const IconEditText = () => (
     <path d="M16.7 10.3 L19.7 13.3 L13.4 19.6 L10.4 20.1 L10.9 17.1 Z" />
   </Icon>
 )
+/** Arrow cursor: Select object mode (click a page object to pick it) */
+export const IconSelect = () => (
+  <Icon>
+    <path d="M6.2 4.5 L6.2 17.3 L9.5 13.9 L12.1 19.5 L14.4 18.4 L11.8 13 L16.1 13 Z" />
+  </Icon>
+)
 export const IconInk = () => (
   <Icon>
     <path d="M16.15 4.85 L19.15 7.85 L8.9 18.1 L4.9 19.1 L5.9 15.1 Z" />

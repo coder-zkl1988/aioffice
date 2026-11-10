@@ -117,7 +117,18 @@ import { analyzePdfAutoRotation } from './auto-rotate'
 import { inferPdfAutoRenameTitle } from './auto-rename'
 import { detectPdfAutoSplitDividerPages } from './auto-split'
 import { extractEmbeddedPdfImages } from './extract-images'
-import { extractPdfTables } from './extract-tables'
+import { extractPdfTableDetails, extractPdfTables } from './extract-tables'
+import {
+  exportTableToXlsx,
+  layoutTableImage,
+  normalizeTableRows,
+  padTableBounds,
+  renderTableImage,
+  TABLE_BRIDGE_PADDING_PT,
+  tableBridgeRecord,
+  xlsxRowsFromBytes,
+  type TableBridgeRecord,
+} from './table-bridge'
 import { extractPdfJsonPages, extractPdfTextPages } from './extract-text'
 import { loadPdfJsonImportFonts } from './json-to-pdf'
 import { analyzePdfContentFilter } from './filter-pages'
@@ -141,6 +152,15 @@ import { cropRect, flipPixels, multiplyAlpha } from './image-bake'
 import type { CropFractions, ImageBakeOp } from './image-bake'
 import { removeBackground, type PixelImage } from './cutout'
 import { navAction, shouldHandleDocumentUndo } from './keyNav'
+import {
+  hitTestObject,
+  isTextEntryTarget,
+  objectSelectTolerance,
+  selectableTextRuns,
+  textRunsForPage,
+  type ObjectRect,
+} from './object-select'
+import type { SelectableImage, SelectableObject, SelectableTextRun } from './object-select'
 import { rowOfVisIdx, spreadRows, stepPage } from './spread'
 import {
   captureViewState,
@@ -347,6 +367,7 @@ import {
   IconSquiggly,
   IconStrike,
   IconEditText,
+  IconSelect,
   IconInk,
   IconRect,
   IconEllipse,
@@ -991,6 +1012,16 @@ export default function App() {
     if (!pendingTextInsert) setTextInsertPointer(null)
   }, [pendingTextInsert])
   const [editTextMode, setEditTextMode] = useState(false)
+  /** Viewer mode: click a page image/text run to pick it, Backspace/Delete deletes */
+  const [objectSelectMode, setObjectSelectMode] = useState(false)
+  /** Picked object in Select object mode; a selection of its own so the markup
+      popup/delete flow (`selected`) keeps its behavior */
+  const [objectSel, setObjectSel] = useState<SelectableObject | null>(null)
+  /** Mirrors the mode for callbacks that resolve after a click (index build) */
+  const objectSelectModeRef = useRef(objectSelectMode)
+  objectSelectModeRef.current = objectSelectMode
+  /** Bumped on every click and on clearing: a slow hit test must not land late */
+  const objectSelectSeqRef = useRef(0)
   const [textDraft, setTextDraft] = useState<TextDraft | null>(null)
   /** Current draft for async callbacks (block-probe fallback runs after renders) */
   const textDraftRef = useRef<TextDraft | null>(null)
@@ -1485,6 +1516,8 @@ export default function App() {
   const [blankPageSize, setBlankPageSize] = useState<PdfPageSize>('KEEP')
   const [blankPageOrientation, setBlankPageOrientation] = useState<PdfOrientation>('portrait')
   const [toolDlg, setToolDlg] = useState<PdfToolKind | null>(null)
+  /** Table ↔ Sheets bridge: the last table exported from this tab (session only) */
+  const [tableBridge, setTableBridge] = useState<TableBridgeRecord | null>(null)
   /** The last compress run wrote a file no smaller than its source; the dialog stays open to say so */
   const [toolCompressNoShrink, setToolCompressNoShrink] = useState(false)
   const [toolBusy, setToolBusy] = useState(false)
@@ -2681,10 +2714,11 @@ export default function App() {
     window.pdfApi.setDirty(dirty)
   }, [dirty])
 
-  // Existing images are listed while edit-image mode is on; `doc` in the deps refreshes
-  // the list after a post-save reload (object rects may have changed on disk)
+  // Existing images are listed while edit-image or Select object mode is on;
+  // `doc` in the deps refreshes the list after a post-save reload (object rects
+  // may have changed on disk)
   useEffect(() => {
-    if (!editImageMode || !filePath || !doc) {
+    if (!(editImageMode || objectSelectMode) || !filePath || !doc) {
       setPageImages([])
       return
     }
@@ -2700,7 +2734,42 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [editImageMode, filePath, doc])
+  }, [editImageMode, objectSelectMode, filePath, doc])
+
+  // Select-object is a viewer mode of its own: arming any other page tool leaves
+  // it (those buttons do not know about it), and its frame must not outlive the mode
+  useEffect(() => {
+    if (
+      objectSelectMode &&
+      (readOnly ||
+        editTextMode ||
+        drawTool ||
+        imagePick ||
+        pendingSign ||
+        pendingTextInsert ||
+        editImageMode)
+    ) {
+      objectSelectSeqRef.current += 1
+      setObjectSelectMode(false)
+      setObjectSel(null)
+    }
+  }, [
+    objectSelectMode,
+    readOnly,
+    editTextMode,
+    drawTool,
+    imagePick,
+    pendingSign,
+    pendingTextInsert,
+    editImageMode,
+  ])
+
+  // A save reload replaces the page bitmaps; an object picked in the old
+  // document (or a pending selection request) no longer refers to either
+  useEffect(() => {
+    objectSelectSeqRef.current += 1
+    setObjectSel(null)
+  }, [doc])
 
   // ── Undo/redo: push a full snapshot before each change; consecutive input on the same form field coalesces into one step ──
 
@@ -5905,6 +5974,134 @@ export default function App() {
     }
   }
 
+  // ── Table ↔ Sheets bridge ─────────────────────────────────────────
+
+  const workbookName = (path: string) => path.split(/[\\/]/).pop() ?? path
+
+  /** Export the first table detected on the selected pages and open the workbook in Sheets */
+  const exportTableToSheets = async (
+    pageIndexes: number[],
+    includeTwoColumnTextTables: boolean,
+  ) => {
+    if (!filePath || !doc || toolBusy) return
+    setToolBusy(true)
+    try {
+      const tables = await extractPdfTableDetails(doc, pageIndexes, {
+        includeTwoColumnTextTables,
+      })
+      const table = tables[0]
+      if (!table) {
+        showNotice(t('tableBridgeNoTable'))
+        return
+      }
+      const result = await exportTableToXlsx(window.pdfApi, {
+        filePath,
+        baseName: fileName,
+        table,
+        includeTwoColumnTextTables,
+      })
+      if (!result.ok) {
+        if (!result.canceled) showNotice(result.error)
+        return
+      }
+      setTableBridge(tableBridgeRecord(filePath, result.savedPath, table))
+      setToolDlg(null)
+      // Opening routes through the shell; standalone hosts have no opener, and the
+      // file is already written, so say so instead of failing the whole action
+      const opened = await window.pdfApi.openSourcePath(result.savedPath).then(
+        () => true,
+        () => false,
+      )
+      showNotice(
+        t(opened ? 'tableBridgeExported' : 'tableBridgeSaved', {
+          name: workbookName(result.savedPath),
+          page: table.pageNumber,
+          table: table.tableNumber,
+        }),
+      )
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : String(error))
+    } finally {
+      setToolBusy(false)
+    }
+  }
+
+  /** Open the bridged workbook again (Sheets tab), to keep editing it; a host
+      without an opener rejects and the notice already told the user the path */
+  const openTableBridgeWorkbook = () => {
+    if (!tableBridge) return
+    void window.pdfApi.openSourcePath(tableBridge.xlsxPath).catch(() => undefined)
+  }
+
+  /** Re-render the edited workbook rows over the original table rectangle, undoably */
+  const updateTableFromWorkbook = async () => {
+    const record = tableBridge
+    if (!record || !filePath || readOnly || toolBusy) return
+    if (record.pageNumber > pageCount) {
+      showNotice(t('tableBridgePageGone'))
+      return
+    }
+    setToolBusy(true)
+    try {
+      const data = await window.pdfApi.readBridgeWorkbook(record.xlsxPath)
+      if (!data.ok) {
+        showNotice(t('tableBridgeReadFailed', { error: data.error }))
+        return
+      }
+      const grid = normalizeTableRows(await xlsxRowsFromBytes(data.bytes))
+      // The detected box ends at the text baseline; a couple of points of padding
+      // also cover descenders and the old table's rules, while the drawn table
+      // fills the padded box so the white paper reaches its edges
+      const rect = padTableBounds(record.bounds, TABLE_BRIDGE_PADDING_PT)
+      const layout = layoutTableImage(grid, {
+        widthPt: rect[2] - rect[0],
+        heightPt: rect[3] - rect[1],
+        columnWidths: record.columnWidths,
+        rowHeightPt: record.rowHeight,
+      })
+      const image = renderTableImage(grid, layout)
+      // Replace the previous bridge image in one step so repeated updates stay undoable.
+      // Finding it by footprint (not just the recorded id) also covers undo/redo, which
+      // can bring back an earlier bridge image with a different id.
+      const previous = imageEditsRef.current.filter(
+        (edit) =>
+          edit.input.kind === 'insertImage' &&
+          edit.input.pageIndex === record.pageNumber - 1 &&
+          edit.input.layer === 'aboveText' &&
+          rectsNear(edit.input.rect, rect),
+      )
+      const editId = newId()
+      const ops: Op[] = previous.map((edit) => ({ op: 'removeImageEdit', id: edit.id }))
+      ops.push({
+        op: 'addImageEdit',
+        id: editId,
+        input: {
+          kind: 'insertImage',
+          pageIndex: record.pageNumber - 1,
+          image,
+          rect,
+          layer: 'aboveText',
+          rotate: ((pageGeom(record.pageNumber - 1).rot % 360) + 360) % 360,
+        },
+      })
+      const plan = applyEditOpsRef.current(ops)
+      if (plan.failures.length > 0) {
+        showNotice(plan.failures[0]!.error)
+        return
+      }
+      setTableBridge({ ...record, bridgeEditId: editId })
+      showNotice(t('tableBridgeUpdated'))
+    } catch (error) {
+      showNotice(
+        t('tableBridgeReadFailed', {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      )
+    } finally {
+      setToolBusy(false)
+    }
+  }
+
   const runBulkTextReplacement = async (request: PdfBulkTextReplacementRequest) => {
     if (!filePath || toolBusy) return
     setToolBusy(true)
@@ -7275,6 +7472,127 @@ export default function App() {
       ),
     [imageEdits],
   )
+
+  // ── Select object mode: hit-test a page object, then delete it ──
+
+  /** Selectable images of a viewer page; a duplicate draws its source's images */
+  const selectableImagesForPage = (origIdx: number): SelectableImage[] => {
+    const origin = originPageOf(origIdx)
+    if (origin === null) return []
+    return pageImages
+      .filter((ref) => ref.pageIndex === origin)
+      .filter((ref) => !claimedImageKeys.has(`${origIdx}:${imageRectKey(ref.rect)}`))
+      .map((ref) => ({
+        kind: 'image' as const,
+        pageIndex: origIdx,
+        rect: ref.rect,
+        aboveText: ref.aboveText,
+      }))
+  }
+
+  /** Text runs of a viewer page, minus runs already owned by a pending text edit —
+      a second erase over the same objects would overlap and be skipped at save.
+      Rotated runs and blanks are dropped by textRunsForPage. */
+  const selectableTextRunsForPage = async (origIdx: number): Promise<SelectableTextRun[]> => {
+    const origin = originPageOf(origIdx)
+    if (origin === null) return []
+    // A recognized scan's text comes from OCR, not from text objects: erasing it
+    // would stage an edit the engine can never match. The pixels are the page.
+    if (ocrPages.has(origin)) return []
+    const index = getSearchIndex()
+    if (!index) return []
+    let runs: SelectableTextRun[]
+    try {
+      const entries = await index
+      runs = textRunsForPage(origIdx, entries[origin])
+    } catch {
+      return []
+    }
+    const pending = textEdits.filter((edit) => edit.input.pageIndex === origIdx)
+    // An opaque image painted above the text (e.g. the table bridge's rendered
+    // workbook) hides the runs it covers: picking such a run would stage an
+    // invisible erase that only surfaces if the image is later removed
+    const coverRects: ObjectRect[] = []
+    for (const edit of imageEdits) {
+      if (
+        edit.input.kind === 'insertImage' &&
+        edit.input.pageIndex === origIdx &&
+        edit.input.layer === 'aboveText'
+      ) {
+        coverRects.push(edit.input.rect)
+      }
+    }
+    if (pending.length === 0 && coverRects.length === 0) return runs
+    return selectableTextRuns(
+      runs,
+      pending.map((edit) => edit.input.rect),
+      coverRects,
+    )
+  }
+
+  /** Click in Select object mode: pick the nearest image or text run near the click */
+  const selectObjectAt = (origIdx: number, e: ReactMouseEvent<HTMLDivElement>) => {
+    if (readOnly || e.button !== 0) return
+    // Overlays with their own click targets (stamps, drawings, image handles) keep them
+    if (!(e.target as Element).closest?.('.pdf-page-content')) return
+    const seq = ++objectSelectSeqRef.current
+    const box = e.currentTarget.getBoundingClientRect()
+    const geom = pageGeom(origIdx)
+    const point = viewToPdf(geom, (e.clientX - box.left) / scale, (e.clientY - box.top) / scale)
+    const tolerance = objectSelectTolerance(scale, geom.userUnit ?? 1)
+    const images = selectableImagesForPage(origIdx)
+    setSelected(null)
+    void selectableTextRunsForPage(origIdx).then((runs) => {
+      // A newer click, leaving the mode, or a document reload supersedes this one
+      if (objectSelectSeqRef.current !== seq || !objectSelectModeRef.current) return
+      setObjectSel(hitTestObject(point, [...images, ...runs], tolerance))
+    })
+  }
+
+  /** Clear the picked object and invalidate any hit test still in flight */
+  const clearObjectSelection = () => {
+    objectSelectSeqRef.current += 1
+    setObjectSel(null)
+  }
+
+  /** Backspace/Delete in Select object mode: stage the matching delete op.
+      Images use the existing deleteImage content-stream op; text runs reuse the
+      text-edit erase path (an empty replacement), which previews through the
+      pdfium live render and removes the run from the file on save. */
+  const deleteSelectedObject = () => {
+    const sel = objectSel
+    if (!sel) return
+    const plan =
+      sel.kind === 'image'
+        ? applyEditOps([
+            {
+              op: 'addImageEdit',
+              input: { kind: 'deleteImage', pageIndex: sel.pageIndex, oldRect: sel.rect },
+              staticFill: savedStaticFillForRef({
+                pageIndex: sel.pageIndex,
+                rect: sel.rect,
+                aboveText: sel.aboveText ?? false,
+              }),
+            },
+          ])
+        : applyEditOps([
+            {
+              op: 'putTextEdit',
+              input: {
+                pageIndex: sel.pageIndex,
+                rect: sel.rect,
+                oldText: sel.text,
+                newText: '',
+                fontSize: sel.fontSize,
+              },
+            },
+          ])
+    if (plan.failures.length > 0) {
+      showNotice(plan.failures[0]!.error)
+      return
+    }
+    clearObjectSelection()
+  }
 
   // ── Live page preview: pdfium re-renders the touched region without the moved/
   // resized/deleted images, without deleted saved annotations and without the text
@@ -8919,6 +9237,8 @@ export default function App() {
         else if (imagePick) setImagePick(null)
         else if (editTextMode) setEditTextMode(false)
         else if (editImageMode) setEditImageMode(false)
+        else if (objectSel) clearObjectSelection()
+        else if (objectSelectMode) setObjectSelectMode(false)
         else if (pendingSign) setPendingSign(null)
         else if (noteDraft) setNoteDraft(null)
         else if (activeNote) setActiveNote(null)
@@ -8931,6 +9251,18 @@ export default function App() {
         return
       }
       if (inEditable) return
+      // Select object mode owns Backspace/Delete while an object is picked; the
+      // editable guard above is repeated here so the rule stands on its own
+      if (
+        objectSelectMode &&
+        objectSel &&
+        (e.key === 'Delete' || e.key === 'Backspace') &&
+        !isTextEntryTarget(e.target)
+      ) {
+        e.preventDefault()
+        deleteSelectedObject()
+        return
+      }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedFormFieldIds.length > 0) {
         e.preventDefault()
         deleteSelectedFormFields()
@@ -9329,6 +9661,8 @@ export default function App() {
         setPendingSign(null)
         setImagePick(null)
         setEditImageMode(false)
+        setObjectSelectMode(false)
+        clearObjectSelection()
         setEditTextMode((v) => !v)
       }}
     >
@@ -9336,6 +9670,37 @@ export default function App() {
         <IconEditText />
       </span>
       <span>{t('editText')}</span>
+    </button>
+  )
+
+  /** Viewer mode (not a DrawTool): pick an image or text run, then delete it */
+  const selectObjectBtn = (
+    <button
+      className={`rb-big${objectSelectMode ? ' active' : ''}`}
+      disabled={readOnly}
+      data-tip={t('selectObjectHint')}
+      onClick={() => {
+        if (objectSelectMode) {
+          setObjectSelectMode(false)
+          clearObjectSelection()
+          return
+        }
+        setEditTextMode(false)
+        setTextDraft(null)
+        setPendingTextInsert(null)
+        setImagePick(null)
+        setPendingSign(null)
+        setEditImageMode(false)
+        setDrawTool(null)
+        setSelected(null)
+        clearObjectSelection()
+        setObjectSelectMode(true)
+      }}
+    >
+      <span className="rb-big-icon">
+        <IconSelect />
+      </span>
+      <span>{t('selectObject')}</span>
     </button>
   )
 
@@ -9833,6 +10198,7 @@ export default function App() {
               <div className="ribbon-sep" />
               <div className="ribbon-group">
                 <div className="ribbon-group-items">
+                  {selectObjectBtn}
                   {DRAW_TOOLS.map(({ tool, icon: DrawIcon, key }) => (
                     <button
                       key={tool}
@@ -10649,6 +11015,31 @@ export default function App() {
               </button>
             </div>
           )}
+          {tableBridge && tableBridge.sourcePath === filePath && (
+            <div className="pdf-bridge-banner" role="status">
+              <span>
+                {t('tableBridgeBanner', {
+                  name: workbookName(tableBridge.xlsxPath),
+                  page: tableBridge.pageNumber,
+                  table: tableBridge.tableNumber,
+                })}
+              </span>
+              <button className="pdf-modal-btn" type="button" onClick={openTableBridgeWorkbook}>
+                {t('tableBridgeOpen')}
+              </button>
+              <button
+                className="pdf-modal-btn primary"
+                type="button"
+                disabled={readOnly || toolBusy || status !== 'ready'}
+                onClick={() => void updateTableFromWorkbook()}
+              >
+                {t('tableBridgeUpdate')}
+              </button>
+              <button className="pdf-modal-btn" type="button" onClick={() => setTableBridge(null)}>
+                {t('tableBridgeDismiss')}
+              </button>
+            </div>
+          )}
           <div className="pdf-body">
             {sidebar === 'outline' && outline && (
               <div className="pdf-thumbs pdf-outline-pane" style={{ width: sidebarW }}>
@@ -11047,8 +11438,8 @@ export default function App() {
                           key={origIdx}
                           data-page={origIdx}
                           className={`pdf-page${editTextMode && !readOnly ? ' pdf-editing-text' : ''}${
-                            pendingTextInsert ? ' pdf-inserting-text' : ''
-                          }`}
+                            objectSelectMode && !readOnly ? ' pdf-selecting-object' : ''
+                          }${pendingTextInsert ? ' pdf-inserting-text' : ''}`}
                           style={
                             {
                               width: Math.floor(size.width * scale),
@@ -11056,8 +11447,16 @@ export default function App() {
                               '--scale-factor': scale,
                             } as CSSProperties
                           }
+                          onPointerDown={(e) => {
+                            // Select object mode hit-tests on press (the markup
+                            // overlay is pointer-events: none, same page-level rule)
+                            if (objectSelectMode && !readOnly) selectObjectAt(origIdx, e)
+                          }}
                           onClick={(e) => {
                             if (Date.now() - blockDragReleaseAt.current < 400) return
+                            // Handled on pointerdown; a click here would also run
+                            // the markup hit test underneath the picked object
+                            if (objectSelectMode && !readOnly) return
                             if (pendingTextInsert && !readOnly) {
                               const pageBox = e.currentTarget.getBoundingClientRect()
                               placeTextInsert(
@@ -11996,6 +12395,14 @@ export default function App() {
                                 scale={scale}
                                 selectedId={selected?.kind === 'markup' ? selected.id : null}
                               />
+                              {/* Select object mode: frame over the picked image/text run
+                                (pointer-events: none, like the markup overlay) */}
+                              {objectSelectMode && objectSel && objectSel.pageIndex === origIdx && (
+                                <div
+                                  className="pdf-object-select-frame"
+                                  style={pdfRectToCss(geom, objectSel.rect, scale)}
+                                />
+                              )}
                               {/* Selection outline for a saved markup annotation (the markup
                                 itself is painted in the canvas raster) */}
                               {selected?.kind === 'savedMarkup' &&
@@ -13201,6 +13608,9 @@ export default function App() {
                 }}
                 onApply={(operation) => void runPdfTool(operation)}
                 onBulkReplaceText={(request) => void runBulkTextReplacement(request)}
+                onExportTableToSheets={(pageIndexes, includeTwoColumn) =>
+                  void exportTableToSheets(pageIndexes, includeTwoColumn)
+                }
               />
             )}
             {printDlg && (

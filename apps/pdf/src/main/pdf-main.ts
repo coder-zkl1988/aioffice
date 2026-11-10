@@ -86,6 +86,7 @@ import type {
   SavePdfResult,
   RunPdfToolRequest,
   RunPdfToolResult,
+  ReadBridgeWorkbookResult,
   PdfTimestampTokenRequest,
   CropPagesRequest,
   CropPagesResult,
@@ -757,6 +758,10 @@ function openGeneratedPdf(path: string): void {
 const openPathByWc = new Map<number, string>()
 /** File paths granted to each view — readFile only allows these */
 const allowedByWc = new Map<number, Set<string>>()
+/** .xlsx outputs this view wrote through a tool run; the table bridge reads these back
+    after the Sheets tab saved the user's edits (read-only, never in the save grant set) */
+const bridgeWorkbookByWc = new Map<number, Set<string>>()
+const MAX_BRIDGE_WORKBOOK_BYTES = 64 * 1024 * 1024
 /** Unsaved-changes flags mirrored from the renderer; drives the save prompt before closing a tab/window */
 const dirtyByWc = new Set<number>()
 const closeSaveWaiters = new Map<number, (ok: boolean) => void>()
@@ -2155,6 +2160,12 @@ function registerPdfIpc(): void {
           })
           if (picked.canceled || !picked.filePath) return { ok: true, canceled: true }
           await writeFile(picked.filePath, output.bytes)
+          // A table workbook may be edited in Sheets and read back by this view
+          if (outputExtension === '.xlsx') {
+            const paths = bridgeWorkbookByWc.get(e.sender.id) ?? new Set<string>()
+            paths.add(picked.filePath)
+            bridgeWorkbookByWc.set(e.sender.id, paths)
+          }
           // Sizes let the renderer tell the user when a run produced no saving
           return {
             ok: true,
@@ -2179,6 +2190,25 @@ function registerPdfIpc(): void {
         return { ok: true, savedPath: directory, count: outputs.length }
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    },
+  )
+
+  // Table bridge read-back: only workbooks this view itself exported through a tool
+  // run are readable, so a compromised renderer cannot turn this into a file reader.
+  ipcMain.handle(
+    PDF_CHANNELS.readBridgeWorkbook,
+    async (e, path: unknown): Promise<ReadBridgeWorkbookResult> => {
+      if (typeof path !== 'string' || !bridgeWorkbookByWc.get(e.sender.id)?.has(path)) {
+        return { ok: false, error: 'pdf: workbook path was not exported by this view' }
+      }
+      try {
+        const bytes = await readFile(path)
+        if (bytes.byteLength > MAX_BRIDGE_WORKBOOK_BYTES)
+          return { ok: false, error: 'pdf: workbook is too large to read back' }
+        return { ok: true, bytes: new Uint8Array(bytes) }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
     },
   )
@@ -2490,6 +2520,7 @@ function grantAndTrack(wc: WebContents, openPath?: string | null): void {
     redactionPathByWc.delete(wcId)
     redactionFlows.delete(wcId)
     allowedByWc.delete(wcId)
+    bridgeWorkbookByWc.delete(wcId)
     dirtyByWc.delete(wcId)
     certEntriesByWc.delete(wcId)
     saveAsTargetByWc.delete(wcId)
@@ -2500,9 +2531,11 @@ function grantAndTrack(wc: WebContents, openPath?: string | null): void {
   })
   // reload() remounts the renderer without destroying webContents, so the
   // destroyed handler never runs. A remount discards in-memory edits; the
-  // close guard must not still think the tab is dirty.
+  // close guard must not still think the tab is dirty, and the table-bridge
+  // record (with its workbook grant) died with the old renderer.
   wc.on('did-start-loading', () => {
     dirtyByWc.delete(wcId)
+    bridgeWorkbookByWc.delete(wcId)
   })
 }
 

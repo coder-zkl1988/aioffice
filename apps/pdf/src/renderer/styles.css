@@ -2642,6 +2642,26 @@ button {
   cursor: text;
 }
 
+/* Select object mode: the page is addressed as whole objects, so native text
+   selection (and its caret) would fight the object click */
+.pdf-selecting-object,
+.pdf-selecting-object .textLayer,
+.pdf-selecting-object .textLayer span {
+  cursor: default;
+  user-select: none;
+}
+
+/* Frame over the picked image/text run. Chrome drawn on the page, like the
+   markup selection outline, so it reads on paper in both themes */
+.pdf-object-select-frame {
+  position: absolute;
+  z-index: 4;
+  pointer-events: none;
+  outline: 1px solid var(--pdf-select);
+  outline-offset: 1px;
+  background: var(--pdf-sign-drop-bg);
+}
+
 .pdf-textedit-input {
   position: absolute;
   z-index: 6;
@@ -7344,6 +7364,27 @@ textarea.pdf-wm-textarea {
 }
 
 .pdf-sig-banner > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Table ↔ Sheets bridge: one bridged table per session, with its workbook actions */
+.pdf-bridge-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--pdf-prop-bg);
+  border-bottom: 1px solid var(--border);
+  border-inline-start: 3px solid var(--accent);
+}
+
+.pdf-bridge-banner > span {
   flex: 1;
   min-width: 0;
   overflow: hidden;

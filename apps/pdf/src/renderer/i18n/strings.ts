@@ -114,6 +114,9 @@ const fillFormStrings = {
   formDesignCancel: 'Cancel',
   formDesignExistingHint: 'Saved field: move, resize, mark required or delete',
   formDesignSignedLocked: 'This field is signed; clear the signature before moving or deleting it',
+  selectObject: 'Select object',
+  selectObjectHint:
+    'Click an image or a text run to select it; Backspace/Delete removes it; Esc clears',
 }
 
 const localizedFillFormStrings = {
@@ -212,6 +215,8 @@ const localizedFillFormStrings = {
     formAddCrossHint: '在页面上点击放置叉号',
     formPlaceStaticHint: '点击放置；选中后可移动或缩放',
     formXfaWarning: '此 PDF 包含 XFA；当前仅支持 AcroForm，保存可能无法保留 XFA 数据',
+    selectObject: '选择对象',
+    selectObjectHint: '点击图片或文字进行选择，按 Backspace/Delete 删除，Esc 取消',
   },
   'zh-TW': {
     ribbonTabFillForm: '填寫表單',
@@ -308,6 +313,8 @@ const localizedFillFormStrings = {
     formAddCrossHint: '在頁面上點擊放置叉號',
     formPlaceStaticHint: '點擊放置；選取後可移動或縮放',
     formXfaWarning: '此 PDF 包含 XFA；目前僅支援 AcroForm，儲存時可能無法保留 XFA 資料',
+    selectObject: '選取物件',
+    selectObjectHint: '點擊圖片或文字進行選取，按 Backspace/Delete 刪除，Esc 取消',
   },
   vi: {
     ribbonTabFillForm: 'Điền biểu mẫu',
@@ -889,6 +896,18 @@ export const strings = {
     propVersion: 'PDF 版本',
     propProducer: '生成程序',
     propCreated: '创建时间',
+    tableBridgeBanner:
+      '工作簿 {name} 来自第 {page} 页的表格 {table}。在表格应用中编辑并保存后，可在此更新表格。',
+    tableBridgeUpdate: '用工作簿更新表格',
+    tableBridgeOpen: '在表格应用中打开',
+    tableBridgeDismiss: '关闭提示',
+    tableBridgeExported: '第 {page} 页的表格 {table} 已导出为 {name} 并已在表格应用中打开',
+    tableBridgeSaved:
+      '第 {page} 页的表格 {table} 已导出为 {name}；未能在表格应用中自动打开，可手动打开该文件',
+    tableBridgeUpdated: '已用工作簿更新表格',
+    tableBridgeNoTable: '所选页面未检测到表格',
+    tableBridgeReadFailed: '无法读取工作簿：{error}',
+    tableBridgePageGone: '该表格所在的页面已不存在',
     propModified: '修改时间',
   },
   en: {
@@ -1365,6 +1384,18 @@ export const strings = {
     propVersion: 'PDF version',
     propProducer: 'Producer',
     propCreated: 'Created',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'Modified',
   },
   vi: {
@@ -1844,6 +1875,18 @@ export const strings = {
     propVersion: 'Phiên bản PDF',
     propProducer: 'Công cụ tạo',
     propCreated: 'Ngày tạo',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'Ngày sửa đổi',
   },
   tr: {
@@ -2321,6 +2364,18 @@ export const strings = {
     propVersion: 'PDF sürümü',
     propProducer: 'Üretici',
     propCreated: 'Oluşturulma',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'Değiştirilme',
   },
   ja: {
@@ -2796,6 +2851,18 @@ export const strings = {
     propVersion: 'PDF バージョン',
     propProducer: '作成プログラム',
     propCreated: '作成日時',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: '更新日時',
   },
   ko: {
@@ -3269,6 +3336,18 @@ export const strings = {
     propVersion: 'PDF 버전',
     propProducer: '생성 프로그램',
     propCreated: '만든 날짜',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: '수정한 날짜',
   },
   fr: {
@@ -3755,6 +3834,18 @@ export const strings = {
     propVersion: 'Version PDF',
     propProducer: 'Producteur',
     propCreated: 'Créé le',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'Modifié le',
   },
   de: {
@@ -4239,6 +4330,18 @@ export const strings = {
     propVersion: 'PDF-Version',
     propProducer: 'Ersteller',
     propCreated: 'Erstellt',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'Geändert',
   },
   es: {
@@ -4722,6 +4825,18 @@ export const strings = {
     propVersion: 'Versión PDF',
     propProducer: 'Productor',
     propCreated: 'Creado',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'Modificado',
   },
   th: {
@@ -5194,6 +5309,18 @@ export const strings = {
     propVersion: 'เวอร์ชัน PDF',
     propProducer: 'โปรแกรมที่สร้าง',
     propCreated: 'สร้างเมื่อ',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'แก้ไขเมื่อ',
   },
   id: {
@@ -5673,6 +5800,18 @@ export const strings = {
     propVersion: 'Versi PDF',
     propProducer: 'Produser',
     propCreated: 'Dibuat',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'Diubah',
   },
   ru: {
@@ -6153,6 +6292,18 @@ export const strings = {
     propVersion: 'Версия PDF',
     propProducer: 'Производитель',
     propCreated: 'Создан',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'Изменён',
   },
   ar: {
@@ -6624,6 +6775,18 @@ export const strings = {
     propVersion: 'إصدار PDF',
     propProducer: 'المنتج',
     propCreated: 'تاريخ الإنشاء',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'تاريخ التعديل',
   },
   pt: {
@@ -7105,6 +7268,18 @@ export const strings = {
     propVersion: 'Versão do PDF',
     propProducer: 'Produtor',
     propCreated: 'Criado',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'Modificado',
   },
   it: {
@@ -7590,6 +7765,18 @@ export const strings = {
     propVersion: 'Versione PDF',
     propProducer: 'Produttore',
     propCreated: 'Creato',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'Modificato',
   },
   pl: {
@@ -8070,6 +8257,18 @@ export const strings = {
     propVersion: 'Wersja PDF',
     propProducer: 'Program',
     propCreated: 'Utworzono',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'Zmodyfikowano',
   },
   cs: {
@@ -8547,6 +8746,18 @@ export const strings = {
     propVersion: 'Verze PDF',
     propProducer: 'Vytvořeno programem',
     propCreated: 'Vytvořeno',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'Změněno',
   },
   nl: {
@@ -9028,6 +9239,18 @@ export const strings = {
     propVersion: 'PDF-versie',
     propProducer: 'Producent',
     propCreated: 'Gemaakt',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'Gewijzigd',
   },
   ms: {
@@ -9507,6 +9730,18 @@ export const strings = {
     propVersion: 'Versi PDF',
     propProducer: 'Penghasil',
     propCreated: 'Dicipta',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'Diubah suai',
   },
   he: {
@@ -9972,6 +10207,18 @@ export const strings = {
     propVersion: 'גרסת PDF',
     propProducer: 'תוכנת הפקה',
     propCreated: 'נוצר',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'עודכן',
   },
   hi: {
@@ -10448,6 +10695,18 @@ export const strings = {
     propVersion: 'PDF संस्करण',
     propProducer: 'निर्माता प्रोग्राम',
     propCreated: 'निर्माण समय',
+    tableBridgeBanner:
+      'Workbook {name} comes from table {table} on page {page}. Edit it in Sheets, then update the table here.',
+    tableBridgeUpdate: 'Update table from workbook',
+    tableBridgeOpen: 'Open in Sheets',
+    tableBridgeDismiss: 'Dismiss',
+    tableBridgeExported: 'Table {table} on page {page} exported to {name} and opened in Sheets',
+    tableBridgeSaved:
+      'Table {table} on page {page} was exported to {name}; open the workbook manually to edit it',
+    tableBridgeUpdated: 'Table updated from the workbook',
+    tableBridgeNoTable: 'No table was detected on the selected pages',
+    tableBridgeReadFailed: 'Could not read the workbook: {error}',
+    tableBridgePageGone: 'The page that held this table no longer exists',
     propModified: 'संशोधन समय',
   },
   'zh-TW': {
@@ -10911,6 +11170,18 @@ export const strings = {
     propVersion: 'PDF 版本',
     propProducer: '產生程式',
     propCreated: '建立時間',
+    tableBridgeBanner:
+      '活頁簿 {name} 來自第 {page} 頁的表格 {table}。在表格應用程式中編輯並儲存後，可在此更新表格。',
+    tableBridgeUpdate: '用活頁簿更新表格',
+    tableBridgeOpen: '在表格應用程式中開啟',
+    tableBridgeDismiss: '關閉提示',
+    tableBridgeExported: '第 {page} 頁的表格 {table} 已匯出為 {name} 並已在表格應用程式中開啟',
+    tableBridgeSaved:
+      '第 {page} 頁的表格 {table} 已匯出為 {name}；未能在表格應用程式中自動開啟，可手動開啟該檔案',
+    tableBridgeUpdated: '已用活頁簿更新表格',
+    tableBridgeNoTable: '所選頁面未偵測到表格',
+    tableBridgeReadFailed: '無法讀取活頁簿：{error}',
+    tableBridgePageGone: '該表格所在的頁面已不存在',
     propModified: '修改時間',
   },
 }

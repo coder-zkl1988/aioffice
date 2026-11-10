@@ -654,6 +654,9 @@ const EN = {
   includeTwoColumnTables: 'Detect text-only two-column tables',
   tableExportHint:
     'Detects aligned tables locally. Complex, rotated, or scanned tables may need review.',
+  openInSheets: 'Export table & open in Sheets',
+  openInSheetsHint:
+    'Exports the first table detected on the selected pages as an editable workbook',
   downloadDivider: 'Download divider page',
   duplexMode: 'Duplex scanning',
   autoSplitHint:
@@ -1559,6 +1562,8 @@ const ZH: typeof EN = {
   excel: 'Excel',
   includeTwoColumnTables: '识别纯文本双列表格',
   tableExportHint: '在本地识别对齐表格；复杂、旋转或扫描表格建议导出后复核。',
+  openInSheets: '导出表格并在表格应用中打开',
+  openInSheetsHint: '将所选页面检测到的第一个表格导出为可编辑工作簿',
   downloadDivider: '下载分隔页',
   duplexMode: '双面扫描模式',
   autoSplitHint: '在本地扫描兼容二维码，移除分隔页，并将各份文档打包为 ZIP。',
@@ -2412,6 +2417,8 @@ const ZH_TW: typeof EN = {
   excel: 'Excel',
   includeTwoColumnTables: '識別純文字雙欄表格',
   tableExportHint: '在本機識別對齊表格；複雜、旋轉或掃描表格建議匯出後複核。',
+  openInSheets: '匯出表格並在表格應用程式中開啟',
+  openInSheetsHint: '將所選頁面偵測到的第一個表格匯出為可編輯活頁簿',
   downloadDivider: '下載分隔頁',
   duplexMode: '雙面掃描模式',
   autoSplitHint: '在本機掃描相容 QR Code，移除分隔頁，並將各份文件封裝為 ZIP。',
@@ -3347,6 +3354,7 @@ export function PdfToolsDialog({
   onCancel,
   onApply,
   onBulkReplaceText,
+  onExportTableToSheets,
 }: {
   initialKind: PdfToolKind
   filePath: string
@@ -3364,6 +3372,8 @@ export function PdfToolsDialog({
   onCancel: () => void
   onApply: (operation: PdfToolOperation) => void
   onBulkReplaceText: (request: PdfBulkTextReplacementRequest) => void
+  /** Export the first detected table as an editable workbook and open it in Sheets */
+  onExportTableToSheets?: (pageIndexes: number[], includeTwoColumnTextTables: boolean) => void
 }): ReactElement {
   const text = textFor(lang)
   const emailDocumentLabels: EmailDocumentLabels = {
@@ -9932,6 +9942,24 @@ export function PdfToolsDialog({
               />
             </label>
             <div className="pdf-bookmark-empty">{text.tableExportHint}</div>
+            {onExportTableToSheets && (
+              <>
+                <button
+                  className="pdf-modal-btn pdf-tools-inline-action"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    if (!targetPageIndexes || targetPageIndexes.length === 0)
+                      return setError(text.invalidPages)
+                    setError('')
+                    onExportTableToSheets(targetPageIndexes, includeTwoColumnTables)
+                  }}
+                >
+                  {text.openInSheets}
+                </button>
+                <div className="pdf-bookmark-empty">{text.openInSheetsHint}</div>
+              </>
+            )}
           </div>
         )}
 

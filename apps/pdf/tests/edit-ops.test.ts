@@ -856,3 +856,50 @@ describe('link drawings', () => {
     expect(plan(link({ destPage: 1.5 })).failures[0]?.error).toMatch(/1-based/)
   })
 })
+
+describe('object-select deletes', () => {
+  const oldRect: [number, number, number, number] = [12, 34, 120, 90]
+
+  it('stages a deleteImage op for an image selection; removing it (undo) restores the image', () => {
+    const a = run(empty(), [
+      { op: 'addImageEdit', input: { kind: 'deleteImage', pageIndex: 1, oldRect } },
+    ])
+    expect(a.plan.failures).toEqual([])
+    expect(a.state.imageEdits).toHaveLength(1)
+    expect(a.state.imageEdits[0]!.input).toEqual({ kind: 'deleteImage', pageIndex: 1, oldRect })
+    const b = run(a.state, [{ op: 'removeImageEdit', id: a.state.imageEdits[0]!.id }])
+    expect(b.state.imageEdits).toEqual([])
+  })
+
+  it('stages an empty-text replacement for a text-run selection; removing it (undo) restores the run', () => {
+    const input = {
+      pageIndex: 2,
+      rect: [10, 20, 90, 32] as [number, number, number, number],
+      oldText: 'Invoice',
+      newText: '',
+      fontSize: 12,
+    }
+    const a = run(empty(), [{ op: 'putTextEdit', input }])
+    expect(a.plan.failures).toEqual([])
+    expect(a.state.textEdits).toHaveLength(1)
+    expect(a.state.textEdits[0]!.input).toEqual(input)
+    const b = run(a.state, [{ op: 'removeTextEdit', id: a.state.textEdits[0]!.id }])
+    expect(b.state.textEdits).toEqual([])
+  })
+
+  it('refuses a second delete of the same image at the same rect', () => {
+    const first = run(empty(), [
+      { op: 'addImageEdit', input: { kind: 'deleteImage', pageIndex: 0, oldRect } },
+    ])
+    // The host rebuilds claimedImages from the pending edits before each batch
+    const claimed = new Set(['0:' + oldRect.map((v) => v.toFixed(2)).join(',')])
+    const second = run(
+      first.state,
+      [{ op: 'addImageEdit', input: { kind: 'deleteImage', pageIndex: 0, oldRect } }],
+      ctx({ claimedImages: claimed }),
+    )
+    expect(second.plan.failures).toHaveLength(1)
+    expect(second.plan.failures[0]!.error).toContain('already has a pending edit')
+    expect(second.state.imageEdits).toHaveLength(1)
+  })
+})

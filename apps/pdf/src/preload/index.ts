@@ -40,6 +40,7 @@ const api: PdfApi = {
   reduceFileSize: (path) => ipcRenderer.invoke(PDF_CHANNELS.reduceFileSize, path),
   insertBlankPage: (request) => ipcRenderer.invoke(PDF_CHANNELS.insertBlankPage, request),
   runTool: (request) => ipcRenderer.invoke(PDF_CHANNELS.runTool, request),
+  readBridgeWorkbook: (path: string) => ipcRenderer.invoke(PDF_CHANNELS.readBridgeWorkbook, path),
   fetchWebResource: (request) => ipcRenderer.invoke(PDF_CHANNELS.fetchWebResource, request),
   requestTimestampToken: (request) => ipcRenderer.invoke(PDF_CHANNELS.timestampToken, request),
   splitPdf: (request) => ipcRenderer.invoke(PDF_CHANNELS.splitPdf, request),
