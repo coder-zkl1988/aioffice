@@ -6,7 +6,7 @@ import {
   type AiSettings,
   type AiStreamChunk,
   type AiStreamRequest,
-} from '@genoffice/ai-provider'
+} from '@genoffice/ai-provider/browser'
 
 export const AI_SETTINGS_STORAGE_KEY = 'genoffice.web.ai-settings'
 

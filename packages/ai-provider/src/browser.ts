@@ -1,5 +1,7 @@
 /** Browser-safe settings surface. Keep Node-backed transports out of renderer bundles. */
 export type {
+  AiChatRequest,
+  AiChatResponse,
   AiCustomCompat,
   AiCustomEndpoint,
   AiCustomModelProfile,
@@ -8,7 +10,10 @@ export type {
   AiProviderConfig,
   AiProviderId,
   AiProviderMeta,
+  AiReasoningEffort,
   AiSettings,
+  AiStreamChunk,
+  AiStreamRequest,
   CodexModelCatalog,
 } from './types'
 export {
@@ -19,6 +24,8 @@ export {
   MAX_MAX_OUTPUT_TOKENS,
   MIN_MAX_OUTPUT_TOKENS,
   clampMaxOutputTokens,
+  defaultAiSettings,
+  resolveAiSettings,
 } from './providers'
 export {
   activeCustomEndpoint,

@@ -24,7 +24,7 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import type { AiReasoningEffort } from '@genoffice/ai-provider'
+import type { AiReasoningEffort } from '@genoffice/ai-provider/browser'
 import '@genoffice/ui/tokens.css'
 import './workspace.css'
 import {
