@@ -16,8 +16,9 @@ COPY apps/sheets/native/xlsx-engine/src ./src
 RUN if [ -n "$CARGO_REGISTRY" ]; then \
       cargo_config_dir="${CARGO_HOME:-/root/.cargo}"; \
       mkdir -p "$cargo_config_dir"; \
+      case "$CARGO_REGISTRY" in sparse+*) mirror_url="$CARGO_REGISTRY" ;; *) mirror_url="sparse+${CARGO_REGISTRY%/}/" ;; esac; \
       printf '[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
-        "$CARGO_REGISTRY" > "$cargo_config_dir/config.toml"; \
+        "$mirror_url" > "$cargo_config_dir/config.toml"; \
     fi \
  && cargo build --release --locked
 
