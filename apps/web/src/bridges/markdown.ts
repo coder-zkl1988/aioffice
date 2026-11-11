@@ -10,7 +10,9 @@ import {
 import {
   cancelWebAiStream,
   getWebAiSettings,
+  onWebAiSettingsChanged,
   onWebAiStream,
+  saveWebAiSettings,
   webAiStream,
   webSearch,
 } from '../lib/ai'
@@ -134,14 +136,38 @@ const markdownApi: Partial<MarkdownApi> = {
   onLanguageChanged: () => () => {},
   getTheme: async () => readTheme(),
   onThemeChanged: () => () => {},
+  getDocumentTheme: async () => 'follow' as const,
+  onDocumentThemeChanged: () => () => {},
+  getMarkdownTheme: async () => 'default' as const,
+  setMarkdownTheme: async (theme) => theme,
   getAiSettings: async () => getWebAiSettings(),
+  setAiSettings: async (settings) => saveWebAiSettings(settings),
+  onAiSettingsChanged: onWebAiSettingsChanged,
+  consumeHeadlessExport: async () => null,
+  headlessExportDone: () => {},
   aiStream: webAiStream,
   aiStreamCancel: cancelWebAiStream,
   onAiStream: onWebAiStream,
   webSearch,
 }
 
-window.markdownApi = markdownApi as unknown as MarkdownApi
+// Same contract as the other web bridges: an unimplemented native member must
+// stay callable or one mount-time call unmounts the whole React tree.
+const warnedMarkdownMembers = new Set<string>()
+const markdownBridge = new Proxy(markdownApi as Record<string, unknown>, {
+  get(target, property) {
+    if (typeof property !== 'string') return undefined
+    const existing = target[property]
+    if (existing !== undefined) return existing
+    if (!warnedMarkdownMembers.has(property)) {
+      warnedMarkdownMembers.add(property)
+      console.warn(`[web] markdownApi.${property} is not implemented in the browser bridge`)
+    }
+    return property.startsWith('on') ? () => () => {} : async () => null
+  },
+})
+
+window.markdownApi = markdownBridge as unknown as MarkdownApi
 
 if (!window.projectApi) {
   Object.defineProperty(window, 'projectApi', { value: undefined, configurable: true })

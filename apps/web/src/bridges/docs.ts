@@ -17,6 +17,7 @@ import {
   cancelWebAiStream,
   getWebAiSettings,
   hasConfiguredWebAi,
+  onWebAiSettingsChanged,
   onWebAiStream,
   saveWebAiSettings,
   webAiChat,
@@ -195,6 +196,18 @@ const desktop: Partial<DesktopApi> = {
     return path ? openDocxPath(path) : null
   },
   consumeNewBlankDoc: async () => true,
+  // The web workspace generates AI documents in the current tab, so there is
+  // never a queued AI-authored document or a CLI headless-export target to
+  // consume. These must resolve (not throw) or the editor never mounts.
+  consumeAiDocContent: async () => null,
+  consumeHeadlessExport: async () => null,
+  headlessExportDone: () => {},
+  getAuthorName: async () => '',
+  onAuthorNameChanged: () => () => {},
+  getDocumentTheme: async () => 'follow' as const,
+  onDocumentThemeChanged: () => () => {},
+  onAiSettingsChanged: onWebAiSettingsChanged,
+  confirmDocumentReplace: async () => true,
   onOpenDocx: () => () => {},
   onRenamedDocx: () => () => {},
   saveDocx: async (path, data, auto) => {
@@ -281,9 +294,39 @@ const desktop: Partial<DesktopApi> = {
   onCloseSaveRequest: () => () => {},
   reportCloseSaveResult: () => {},
   reportViewMenuState: () => {},
+  // Mount-time subscriptions the web workspace has no native source for
+  // (Zotero, OS context menus, native image viewer). They must return an
+  // unsubscribe so the effects that register them do not throw on mount.
+  onContextMenuRequest: () => () => {},
+  onViewImage: () => () => {},
+  onZoteroRequest: () => () => {},
 }
 
-window.desktop = desktop as unknown as DesktopApi
+// The browser port implements the subset of the docs DesktopApi it can serve.
+// The native API grew methods the web bridge never had; any not-yet-ported
+// member must still be callable or a single mount-time call takes down the
+// whole React tree (blank page). Fall back to a safe inert member per shape:
+// subscriptions return an unsubscribe, async actions resolve to null, and the
+// gap is logged once so missing functionality is visible, not silent.
+const warnedDocsMembers = new Set<string>()
+function inertDocsMember(property: string): unknown {
+  if (property.startsWith('on')) return () => () => {}
+  return async () => null
+}
+const desktopBridge = new Proxy(desktop as Record<string, unknown>, {
+  get(target, property) {
+    if (typeof property !== 'string') return undefined
+    const existing = target[property]
+    if (existing !== undefined) return existing
+    if (!warnedDocsMembers.has(property)) {
+      warnedDocsMembers.add(property)
+      console.warn(`[web] desktop.${property} is not implemented in the browser bridge`)
+    }
+    return inertDocsMember(property)
+  },
+})
+
+window.desktop = desktopBridge as unknown as DesktopApi
 
 if (!window.projectApi) {
   Object.defineProperty(window, 'projectApi', { value: undefined, configurable: true })

@@ -7,7 +7,9 @@ import { runPdfToolBytes } from '@genoffice/pdf-tools'
 import {
   cancelWebAiStream,
   getWebAiSettings,
+  onWebAiSettingsChanged,
   onWebAiStream,
+  saveWebAiSettings,
   webAiStream,
   webFetchImage,
   webGenerateImage,
@@ -19,6 +21,7 @@ import {
   getStoredFile,
   pickBrowserFile,
   putStoredFile,
+  queuePendingFile,
   readLanguage,
   readTheme,
   writeBrowserFile,
@@ -308,12 +311,39 @@ const pdfApi: Partial<PdfApi> = {
   getTheme: async () => readTheme(),
   onThemeChanged: () => () => {},
   getAiSettings: async () => getWebAiSettings(),
+  setAiSettings: async (settings) => saveWebAiSettings(settings),
+  onAiSettingsChanged: onWebAiSettingsChanged,
+  getUsername: async () => '',
+  onUsernameChanged: () => () => {},
+  openSourcePath: async (path: string) => {
+    queuePendingFile(path)
+    // The table bridge hands a workbook to Sheets; other paths go to docs.
+    window.open(/\.xlsx$/i.test(path) ? './sheets.html' : './docs.html', '_blank', 'noopener')
+  },
   aiStream: webAiStream,
   aiStreamCancel: cancelWebAiStream,
   onAiStream: onWebAiStream,
 }
 
-window.pdfApi = pdfApi as unknown as PdfApi
+// See the docs bridge: the native PdfApi grew members the web bridge never
+// had. An unimplemented member must stay callable or one mount-time call
+// unmounts the whole React tree. Subscriptions return an unsubscribe; async
+// actions resolve to null; each gap is logged once.
+const warnedPdfMembers = new Set<string>()
+const pdfBridge = new Proxy(pdfApi as Record<string, unknown>, {
+  get(target, property) {
+    if (typeof property !== 'string') return undefined
+    const existing = target[property]
+    if (existing !== undefined) return existing
+    if (!warnedPdfMembers.has(property)) {
+      warnedPdfMembers.add(property)
+      console.warn(`[web] pdfApi.${property} is not implemented in the browser bridge`)
+    }
+    return property.startsWith('on') ? () => () => {} : async () => null
+  },
+})
+
+window.pdfApi = pdfBridge as unknown as PdfApi
 
 async function mobileScannerJson<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(new URL(path, document.baseURI), {

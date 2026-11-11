@@ -186,6 +186,15 @@ export function hasConfiguredWebAi(settings: AiSettings = getWebAiSettings()): b
 
 export function saveWebAiSettings(settings: AiSettings): void {
   localStorage.setItem(AI_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+  for (const listener of settingsListeners) listener()
+}
+
+const settingsListeners = new Set<() => void>()
+
+/** Subscribe to AI-settings changes (settings panel saves). Returns an unsubscribe. */
+export function onWebAiSettingsChanged(handler: () => void): () => void {
+  settingsListeners.add(handler)
+  return () => settingsListeners.delete(handler)
 }
 
 export async function webAiChat(request: AiChatRequest): Promise<AiChatResponse> {

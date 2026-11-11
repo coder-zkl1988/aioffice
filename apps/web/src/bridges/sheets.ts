@@ -8,6 +8,7 @@ import {
   cancelWebAiStream,
   getWebAiSettings,
   hasConfiguredWebAi,
+  onWebAiSettingsChanged,
   onWebAiStream,
   saveWebAiSettings,
   webAiChat,
@@ -193,6 +194,11 @@ const desktopApi: Partial<DesktopApi> = {
   onLanguageChanged: () => () => {},
   getTheme: async () => readTheme(),
   onThemeChanged: () => () => {},
+  getDocumentTheme: async () => 'follow' as const,
+  onDocumentThemeChanged: () => () => {},
+  onAiSettingsChanged: onWebAiSettingsChanged,
+  getUserDisplayName: async () => '',
+  onUserDisplayNameChanged: () => () => {},
   selectWorkbook,
   readWorkbookRange: (request) => sheetsApi('range', request),
   readWorkbookFormulas: (request) => sheetsApi('formulas', request),
@@ -249,7 +255,24 @@ const desktopApi: Partial<DesktopApi> = {
   getPathForFile: attachments.getPathForFile,
 }
 
-window.desktopApi = desktopApi as unknown as DesktopApi
+// Same contract as the docs/pdf bridges: an unimplemented native member must
+// stay callable, or a single mount-time call unmounts the whole React tree.
+// Subscriptions return an unsubscribe; async actions resolve to null.
+const warnedSheetsMembers = new Set<string>()
+const sheetsBridge = new Proxy(desktopApi as Record<string, unknown>, {
+  get(target, property) {
+    if (typeof property !== 'string') return undefined
+    const existing = target[property]
+    if (existing !== undefined) return existing
+    if (!warnedSheetsMembers.has(property)) {
+      warnedSheetsMembers.add(property)
+      console.warn(`[web] desktopApi.${property} is not implemented in the browser bridge`)
+    }
+    return property.startsWith('on') ? () => () => {} : async () => null
+  },
+})
+
+window.desktopApi = sheetsBridge as unknown as DesktopApi
 
 window.addEventListener('pagehide', () => {
   for (const sessionId of sessionFiles.keys()) {
